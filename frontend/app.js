@@ -5,7 +5,10 @@ const speedInput = document.querySelector("#speed");
 const speedValue = document.querySelector("#speed-value");
 const image = document.querySelector("form img");
 const zoomButton = document.querySelector("#zoom-button");
-const zoomInfo = document.querySelector("#zoom-info");
+const zoomInfo = document.querySelector("#zoom-info");const zoomSelection = document.querySelector("#zoom-selection");
+const zoomDialog = document.querySelector("#zoom-dialog");
+const zoomCanvas = document.querySelector("#zoom-canvas");
+const zoomClose = document.querySelector("#zoom-close");
 
 settingsButton.addEventListener("click", () => {
   const open = settingsPanel.hidden;
@@ -24,118 +27,145 @@ speedInput.addEventListener("input", () => {
   speedValue.textContent = `${speedInput.value} ms`;
 });
 
-const zoomLevels = [1, 1.5, 2, 3, 4, 6, 8];
-let zoomIndex = 0;
-let zoomDirection = 1;
-let offsetX = 0;
-let offsetY = 0;
+let selectionStart = null;
 let activePointerId = null;
-let dragged = false;
-let startX = 0;
-let startY = 0;
-let lastX = 0;
-let lastY = 0;
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
 
 function zoomEnabled() {
   return zoomButton.getAttribute("aria-pressed") === "true";
 }
 
-function showZoom() {
-  const scale = zoomLevels[zoomIndex];
-
-  image.style.transform = scale === 1
-    ? ""
-    : `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
-
-  image.classList.toggle("zoomed", scale > 1);
-}
-
-zoomButton.addEventListener("click", () => {
-  const enabled = !zoomEnabled();
+function setZoomEnabled(enabled) {
   zoomButton.setAttribute("aria-pressed", String(enabled));
   zoomInfo.hidden = !enabled;
   image.classList.toggle("zoom-ready", enabled);
+  zoomSelection.hidden = true;
+}
 
-  if (!enabled) {
-    zoomIndex = 0;
-    zoomDirection = 1;
-    offsetX = 0;
-    offsetY = 0;
-    activePointerId = null;
-    image.classList.remove("dragging");
-    showZoom();
-  }
+zoomButton.addEventListener("click", () => {
+  setZoomEnabled(!zoomEnabled());
 });
 
-function zoomAt(x, y) {
-  const currentScale = zoomLevels[zoomIndex];
-  const nextIndex = zoomIndex + zoomDirection;
-  const nextScale = zoomLevels[nextIndex];
+function openZoom(region, imageRect) {
+  const scaleX = image.naturalWidth / imageRect.width;
+  const scaleY = image.naturalHeight / imageRect.height;
+  const sourceX = (region.left - imageRect.left) * scaleX;
+  const sourceY = (region.top - imageRect.top) * scaleY;
+  const sourceWidth = region.width * scaleX;
+  const sourceHeight = region.height * scaleY;
 
-  if (nextIndex === 0) {
-    offsetX = 0;
-    offsetY = 0;
-  } else {
-    const rect = image.getBoundingClientRect();
-    const factor = nextScale / currentScale;
+  zoomCanvas.width = Math.max(1, Math.round(sourceWidth));
+  zoomCanvas.height = Math.max(1, Math.round(sourceHeight));
 
-    offsetX -= (x - rect.left) * (factor - 1);
-    offsetY -= (y - rect.top) * (factor - 1);
-  }
+  const context = zoomCanvas.getContext("2d");
+  context.drawImage(
+    image,
+    sourceX, sourceY, sourceWidth, sourceHeight,
+    0, 0, zoomCanvas.width, zoomCanvas.height
+  );
 
-  zoomIndex = nextIndex;
+  const availableWidth = Math.min(window.innerWidth - 32, 1000);
+  const availableHeight = Math.min(window.innerHeight - 64, 800);
+  const displayScale = Math.min(
+    availableWidth / zoomCanvas.width,
+    availableHeight / zoomCanvas.height
+  );
 
-  if (zoomIndex === 0 || zoomIndex === zoomLevels.length - 1) {
-    zoomDirection *= -1;
-  }
-
-  showZoom();
+  zoomCanvas.style.width = `${Math.round(zoomCanvas.width * displayScale)}px`;
+  zoomCanvas.style.height = `${Math.round(zoomCanvas.height * displayScale)}px`;
+  zoomCanvas.style.filter = image.style.filter;
+  zoomDialog.showModal();
 }
 
 image.addEventListener("pointerdown", (event) => {
-  if (!zoomEnabled() || activePointerId !== null) return;
+  if (!zoomEnabled() || activePointerId !== null || !image.naturalWidth) return;
 
   activePointerId = event.pointerId;
-  dragged = false;
-  startX = lastX = event.clientX;
-  startY = lastY = event.clientY;
+  selectionStart = {
+    x: event.clientX,
+    y: event.clientY,
+    rect: image.getBoundingClientRect(),
+  };
   image.setPointerCapture(event.pointerId);
+  event.preventDefault();
 });
 
 image.addEventListener("pointermove", (event) => {
   if (event.pointerId !== activePointerId) return;
 
-  const dx = event.clientX - lastX;
-  const dy = event.clientY - lastY;
+  const { x, y, rect } = selectionStart;
+  const endX = clamp(event.clientX, rect.left, rect.right);
+  const endY = clamp(event.clientY, rect.top, rect.bottom);
+  const width = Math.abs(endX - x);
+  const height = Math.abs(endY - y);
 
-  if (Math.hypot(event.clientX - startX, event.clientY - startY) > 5) {
-    dragged = true;
-  }
-
-  if (dragged && zoomIndex > 0) {
-    offsetX += dx;
-    offsetY += dy;
-    showZoom();
-    image.classList.add("dragging");
-  }
-
-  lastX = event.clientX;
-  lastY = event.clientY;
+  zoomSelection.hidden = width < 6 && height < 6;
+  zoomSelection.style.left = `${Math.min(x, endX)}px`;
+  zoomSelection.style.top = `${Math.min(y, endY)}px`;
+  zoomSelection.style.width = `${width}px`;
+  zoomSelection.style.height = `${height}px`;
 });
 
 image.addEventListener("pointerup", (event) => {
   if (event.pointerId !== activePointerId) return;
 
+  const { x, y, rect } = selectionStart;
   activePointerId = null;
-  image.classList.remove("dragging");
-  image.releasePointerCapture(event.pointerId);
+  selectionStart = null;
+  zoomSelection.hidden = true;
 
-  if (!dragged) {
-    zoomAt(event.clientX, event.clientY);
+  if (image.hasPointerCapture(event.pointerId)) {
+    image.releasePointerCapture(event.pointerId);
+  }
+
+  const endX = clamp(event.clientX, rect.left, rect.right);
+  const endY = clamp(event.clientY, rect.top, rect.bottom);
+  const width = Math.abs(endX - x);
+  const height = Math.abs(endY - y);
+
+  if (width >= 8 && height >= 8) {
+    openZoom({
+      left: Math.min(x, endX),
+      top: Math.min(y, endY),
+      width,
+      height,
+    }, rect);
+  } else {
+    const cropWidth = rect.width * 0.3;
+    const cropHeight = rect.height * 0.3;
+
+    openZoom({
+      left: clamp(endX - cropWidth / 2, rect.left, rect.right - cropWidth),
+      top: clamp(endY - cropHeight / 2, rect.top, rect.bottom - cropHeight),
+      width: cropWidth,
+      height: cropHeight,
+    }, rect);
   }
 });
 
-image.addEventListener("pointercancel", () => {
+image.addEventListener("pointercancel", (event) => {
+  if (event.pointerId !== activePointerId) return;
   activePointerId = null;
-  image.classList.remove("dragging");
+  selectionStart = null;
+  zoomSelection.hidden = true;
+});
+
+zoomClose.addEventListener("click", () => zoomDialog.close());
+
+zoomDialog.addEventListener("click", (event) => {
+  const rect = zoomDialog.getBoundingClientRect();
+
+  if (
+    event.clientX < rect.left || event.clientX > rect.right ||
+    event.clientY < rect.top || event.clientY > rect.bottom
+  ) {
+    zoomDialog.close();
+  }
+});
+
+zoomDialog.addEventListener("close", () => {
+  setZoomEnabled(false);
 });
