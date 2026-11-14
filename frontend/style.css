@@ -213,8 +213,8 @@ color: white;}
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 18px;
-  width: min(760px, calc(100% - 32px));
+  gap: 24px;
+  width: min(1240px, calc(100% - 32px));
   margin: 110px auto 48px;
 }
 
@@ -226,6 +226,14 @@ color: white;}
   font-family: "DM Sans", sans-serif;
 }
 
+.visualization-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+  align-items: start;
+  gap: 32px;
+  width: 100%;
+}
+
 .coordinate-fields label {
   display: grid;
   gap: 7px;
@@ -234,7 +242,7 @@ color: white;}
 
 .coordinate-fields input {
   box-sizing: border-box;
-  width: 100%;
+  width: 75%;
   padding: 11px 12px;
   border: 1px solid #55709e;
   border-radius: 8px;
@@ -250,6 +258,7 @@ color: white;}
 
 .celestial-globe-panel {
   width: min(100%, 560px);
+  margin-inline: auto;
   color: #dce8ff;
   text-align: center;
   font-family: "DM Sans", sans-serif;
@@ -322,5 +331,11 @@ color: white;}
 
   .settings {
     right: 16px;
+  }
+}
+
+@media (max-width: 900px) {
+  .visualization-row {
+    grid-template-columns: 1fr;
   }
 }
