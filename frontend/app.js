@@ -17,7 +17,6 @@ const submitButton = coordinateForm.querySelector('input[type="submit"]');
 
 let currentVideoUuid = localStorage.getItem("videoUuid");
 let activeVideoPoll = 0;
-const previewImageSrc = image.getAttribute("src");
 
 async function displayVideo(uuid) {
   const poll = ++activeVideoPoll;
@@ -97,7 +96,7 @@ coordinateForm.addEventListener("submit", async (event) => {
     );
     currentVideoUuid = uuid;
     localStorage.setItem("videoUuid", uuid);
-    image.src = previewImageSrc;
+    image.removeAttribute("src");
     image.alt = "Astronomy preview while the video is created";
     void displayVideo(uuid);
     console.info("Middleware returned UUID:", currentVideoUuid);
