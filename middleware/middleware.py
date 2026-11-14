@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from uuid import uuid4
 import shutil
 
@@ -131,10 +132,11 @@ def sendToFrontend(Video, uuid):
     Output: uuid of the process, which can be used to retrieve the video from the video_cache
     '''
 
-    os.makedirs("video_cache", exist_ok=True)
+    video_cache_dir = Path(__file__).resolve().parent / "video_cache"
+    video_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    video_path = os.path.join("video_cache", f"{uuid}.gif")
-    with open(video_path, "wb") as f:
+    video_path = video_cache_dir / f"{uuid}.gif"
+    with video_path.open("wb") as f:
         f.write(Video)
     return uuid # should send the video_id to the frontend, but for now we just return the uuid
 
