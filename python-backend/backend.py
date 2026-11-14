@@ -576,14 +576,19 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
         raise BackendError(EXIT_NO_DATA, f"no {collection} images cover RA={ra:.5f} Dec={dec:+.5f}")
 
     half = math.ceil(pixels / 2 * math.sqrt(2)) + 2  # covers the grid at any rotation
-    time_bins = [detectors.pick(group) for group in group_into_frames(exposures)]
+    groups = group_into_frames(exposures)
+    time_bins = [b for b in (detectors.pick(g) for g in groups) if b]
+    bins_skipped = len(groups) - len(time_bins)  # too few images per detector to remove glitches
+    if not time_bins:  # nothing has enough images: better a glitchy video than none
+        time_bins, bins_skipped = [detectors.pick(g, min_per_detector=1) for g in groups], 0
 
     job = (ra, dec, half, collection, pixels)
     # How many images may be queued ahead (their lined-up results wait in RAM).
     max_queued = max(2 * DOWNLOAD_THREADS, QUEUE_AHEAD_BYTES // (pixels * pixels * 4))
-    log.info("%d images available, using %d in %d time bins, %dx%d px squares, "
-             "%d download threads, %d processes", len(exposures), sum(map(len, time_bins)),
-             len(time_bins), 2 * half + 1, 2 * half + 1, DOWNLOAD_THREADS, WORKER_PROCESSES)
+    log.info("%d images available, using %d in %d time bins (%d skipped: too few images), "
+             "%dx%d px squares, %d download threads, %d processes",
+             len(exposures), sum(map(len, time_bins)), len(time_bins), bins_skipped,
+             2 * half + 1, 2 * half + 1, DOWNLOAD_THREADS, WORKER_PROCESSES)
     frames, frame_meta, n_failed = [], [], 0
     with ThreadPoolExecutor(DOWNLOAD_THREADS) as downloads, \
             ProcessPoolExecutor(WORKER_PROCESSES, initializer=_init_worker, initargs=job) as aligners:
@@ -644,6 +649,7 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
         "timestamps": [m["timestamp"] for m in frame_meta],
         "frames": frame_meta,
         "images_failed": n_failed,
+        "time_bins_skipped": bins_skipped,
     }
 
 
