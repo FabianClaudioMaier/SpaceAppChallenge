@@ -2,26 +2,13 @@
   --submit-offset: 280px;
 }
 
-body {
+  body {
   min-height: 100vh;
   background-color: #050b1b;
-  background-image:
-    radial-gradient(1px 1px at 17px 31px, white 98%, transparent),
-    radial-gradient(2px 2px at 113px 87px, #c7dcff 98%, transparent),
-    radial-gradient(1px 1px at 59px 162px, white 98%, transparent),
-    radial-gradient(1px 1px at 219px 43px, white 98%, transparent),
-    radial-gradient(2px 2px at 71px 242px, #c7dcff 98%, transparent);
-  background-size:
-    137px 193px,
-    211px 157px,
-    173px 229px,
-    251px 181px,
-    193px 271px;
-}
-
-h1 {
-  color: white;
-  text-align: center;
+  background-image: url("markarians_chain.jpg");
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
 }
 
 p {
@@ -51,6 +38,7 @@ color: white;}
 }
 
 #settings-button {
+  background: #575a5e;
   display: block;
   margin: 0 auto;
   min-width: 220px;
@@ -76,6 +64,19 @@ color: white;}
 
 .settings-panel[hidden] {
   display: none;
+}.settings-panel:not([hidden]) {
+  animation: settings-open 400ms ease-out;
+}
+
+@keyframes settings-open {
+  from {
+    clip-path: inset(-30px -30px 100% -30px);
+    opacity: 0;
+  }
+  to {
+    clip-path: inset(-30px);
+    opacity: 1;
+  }
 }
 
 .setting-row {

@@ -556,6 +556,11 @@ settingsButton.addEventListener("click", () => {
   const open = settingsPanel.hidden;
   settingsPanel.hidden = !open;
   settingsButton.setAttribute("aria-expanded", String(open));
+});document.addEventListener("pointerdown", (event) => {
+  if (settingsPanel.hidden) return;                    // Panel ist schon zu → nichts tun
+  if (event.target.closest(".settings")) return;       // Klick war im Panel oder auf dem Button → offen lassen
+  settingsPanel.hidden = true;
+  settingsButton.setAttribute("aria-expanded", "false");
 });
 
 invertButton.addEventListener("click", () => {
