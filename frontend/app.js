@@ -11,6 +11,9 @@ const zoomDialog = document.querySelector("#zoom-dialog");
 const zoomView = document.querySelector("#zoom-view");
 const zoomImage = document.querySelector("#zoom-image");
 const zoomClose = document.querySelector("#zoom-close");
+const clickSelectToggle = document.querySelector("#click-select-toggle");
+const pinArrowToggle = document.querySelector("#pin-arrow-toggle");
+const applyGlobeCoordinatesButton = document.querySelector("#apply-globe-coordinates");
 const coordinateForm = document.querySelector("#coordinate-form");
 const rightAscensionInput = document.querySelector("#fname");
 const declinationInput = document.querySelector("#lname");
@@ -28,6 +31,8 @@ let globeTarget = null;
 let globeYaw = -0.48;
 let globePitch = 0.32;
 let globeDrag = null;
+let globeInteractionMode = "rotate";
+let pinnedArrowUv = null;
 let earthTexture = null;
 let earthTextureError = null;
 const earthTextureImage = new Image();
@@ -151,17 +156,7 @@ function greenwichMeanSiderealDegrees(date) {
   return ((degrees % 360) + 360) % 360;
 }
 
-function drawCelestialGlobe() {
-  const bounds = coordinateGlobe.getBoundingClientRect();
-  if (!bounds.width || !bounds.height) return;
-
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-  coordinateGlobe.width = Math.round(bounds.width * pixelRatio);
-  coordinateGlobe.height = Math.round(bounds.height * pixelRatio);
-  globeContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-
-  const width = bounds.width;
-  const height = bounds.height;
+function createGlobeProjection(width, height) {
   const centerX = width / 2;
   const centerY = height / 2;
   const radius = Math.min(width * 0.29, height * 0.4);
@@ -169,7 +164,6 @@ function drawCelestialGlobe() {
   const yawSin = Math.sin(globeYaw);
   const pitchCos = Math.cos(globePitch);
   const pitchSin = Math.sin(globePitch);
-  const context = globeContext;
 
   function project(vector) {
     const rotatedX = yawCos * vector.x + yawSin * vector.z;
@@ -181,6 +175,64 @@ function drawCelestialGlobe() {
       y: centerY - radius * rotatedY,
       depth,
     };
+  }
+
+  function unproject(x, y) {
+    const cameraX = (x - centerX) / radius;
+    const cameraY = (centerY - y) / radius;
+    const depthSquared = 1 - cameraX * cameraX - cameraY * cameraY;
+    if (depthSquared < -1e-8) return null;
+
+    const cameraZ = Math.sqrt(Math.max(0, depthSquared));
+    const rotatedY = pitchCos * cameraY + pitchSin * cameraZ;
+    const rotatedZ = -pitchSin * cameraY + pitchCos * cameraZ;
+    return {
+      x: yawCos * cameraX - yawSin * rotatedZ,
+      y: rotatedY,
+      z: yawSin * cameraX + yawCos * rotatedZ,
+    };
+  }
+
+  return {
+    width,
+    height,
+    centerX,
+    centerY,
+    radius,
+    yawCos,
+    yawSin,
+    pitchCos,
+    pitchSin,
+    project,
+    unproject,
+  };
+}
+
+function drawCelestialGlobe() {
+  const bounds = coordinateGlobe.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  coordinateGlobe.width = Math.round(bounds.width * pixelRatio);
+  coordinateGlobe.height = Math.round(bounds.height * pixelRatio);
+  globeContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+  const projection = createGlobeProjection(bounds.width, bounds.height);
+  const {
+    width,
+    height,
+    centerX,
+    centerY,
+    radius,
+    yawCos,
+    yawSin,
+    pitchCos,
+    pitchSin,
+  } = projection;
+  const context = globeContext;
+
+  function project(vector) {
+    return projection.project(vector);
   }
 
   function drawCurve(points, frontColor, backColor, lineWidth) {
@@ -353,12 +405,20 @@ function drawCelestialGlobe() {
   drawPoint({ x: 0, y: -1, z: 0 }, "SCP", "#a9c8ff", 6, 14);
 
   if (globeTarget) {
-    const surfacePoint = project(globeTarget.vector);
-    const endpoint = project({
-      x: globeTarget.vector.x * 1.08,
-      y: globeTarget.vector.y * 1.08,
-      z: globeTarget.vector.z * 1.08,
-    });
+    const isPinned = globeInteractionMode === "pin-arrow" && pinnedArrowUv;
+    const surfacePoint = isPinned
+      ? { x: pinnedArrowUv.u * width, y: pinnedArrowUv.v * height }
+      : project(globeTarget.vector);
+    const endpoint = isPinned
+      ? {
+          x: centerX + (surfacePoint.x - centerX) * 1.08,
+          y: centerY + (surfacePoint.y - centerY) * 1.08,
+        }
+      : project({
+          x: globeTarget.vector.x * 1.08,
+          y: globeTarget.vector.y * 1.08,
+          z: globeTarget.vector.z * 1.08,
+        });
     const deltaX = endpoint.x - centerX;
     const deltaY = endpoint.y - centerY;
     const length = Math.hypot(deltaX, deltaY);
@@ -403,6 +463,16 @@ function drawCelestialGlobe() {
   }
 }
 
+function globeInteractionHint() {
+  if (globeInteractionMode === "click-select") {
+    return "Click a visible point to select coordinates.";
+  }
+  if (globeInteractionMode === "pin-arrow") {
+    return "Drag the globe under the arrow, then apply the coordinates.";
+  }
+  return "Drag the sphere to rotate it.";
+}
+
 function updateCelestialTarget(raDegrees, decDegrees) {
   globeTarget = {
     raDegrees,
@@ -413,12 +483,111 @@ function updateCelestialTarget(raDegrees, decDegrees) {
     `Target: RA ${raDegrees.toFixed(4)}°, Dec ${decDegrees.toFixed(4)}°. ` +
     (earthTextureError
       ? "Earth texture unavailable; check the network. "
-      : "") +
-    "Drag the sphere to rotate it.";
+      : "") + globeInteractionHint();
   drawCelestialGlobe();
 }
 
+function vectorToCoordinates(vector) {
+  return {
+    raDegrees: ((Math.atan2(vector.z, vector.x) * 180 / Math.PI) + 360) % 360,
+    decDegrees: Math.asin(Math.max(-1, Math.min(1, vector.y))) * 180 / Math.PI,
+  };
+}
+
+function setInputsFromGlobeVector(vector) {
+  const { raDegrees, decDegrees } = vectorToCoordinates(vector);
+  rightAscensionInput.value = raDegrees.toFixed(4);
+  declinationInput.value = decDegrees.toFixed(4);
+  rightAscensionInput.dispatchEvent(new Event("input", { bubbles: true }));
+  declinationInput.dispatchEvent(new Event("input", { bubbles: true }));
+  updateCelestialTarget(raDegrees, decDegrees);
+}
+
+function setGlobeInteractionMode(mode) {
+  if (mode === "pin-arrow") {
+    try {
+      updateCelestialTarget(
+        parseBackendAngle(rightAscensionInput.value, "RA"),
+        parseBackendAngle(declinationInput.value, "DEC")
+      );
+    } catch (error) {
+      globeStatus.textContent = `Enter valid coordinates before pinning the arrow: ${error.message}`;
+      return;
+    }
+  }
+
+  globeInteractionMode = mode;
+  const clickSelectEnabled = mode === "click-select";
+  const pinArrowEnabled = mode === "pin-arrow";
+  clickSelectToggle.setAttribute("aria-checked", String(clickSelectEnabled));
+  pinArrowToggle.setAttribute("aria-checked", String(pinArrowEnabled));
+  applyGlobeCoordinatesButton.hidden = !pinArrowEnabled;
+  coordinateGlobe.classList.toggle("selecting-coordinates", clickSelectEnabled);
+
+  pinnedArrowUv = null;
+  if (pinArrowEnabled && globeTarget) {
+    const bounds = coordinateGlobe.getBoundingClientRect();
+    const projection = createGlobeProjection(bounds.width, bounds.height);
+    const point = projection.project(globeTarget.vector);
+    pinnedArrowUv = {
+      u: point.x / projection.width,
+      v: point.y / projection.height,
+    };
+  }
+
+  if (globeTarget) {
+    updateCelestialTarget(globeTarget.raDegrees, globeTarget.decDegrees);
+  } else {
+    globeStatus.textContent = clickSelectEnabled
+      ? "Click a visible point on the globe to select coordinates."
+      : "Enter coordinates to point the globe.";
+    drawCelestialGlobe();
+  }
+}
+
+function selectGlobePoint(clientX, clientY) {
+  const bounds = coordinateGlobe.getBoundingClientRect();
+  const projection = createGlobeProjection(bounds.width, bounds.height);
+  const vector = projection.unproject(clientX - bounds.left, clientY - bounds.top);
+  if (!vector) {
+    globeStatus.textContent = "Click inside the visible globe to select coordinates.";
+    return;
+  }
+  setInputsFromGlobeVector(vector);
+}
+
+function applyPinnedGlobePoint() {
+  if (!pinnedArrowUv) return;
+
+  const bounds = coordinateGlobe.getBoundingClientRect();
+  const projection = createGlobeProjection(bounds.width, bounds.height);
+  const vector = projection.unproject(
+    pinnedArrowUv.u * projection.width,
+    pinnedArrowUv.v * projection.height
+  );
+  if (!vector) {
+    globeStatus.textContent = "The pinned arrow is outside the visible globe.";
+    return;
+  }
+  setInputsFromGlobeVector(vector);
+}
+
+clickSelectToggle.addEventListener("click", () => {
+  setGlobeInteractionMode(
+    globeInteractionMode === "click-select" ? "rotate" : "click-select"
+  );
+});
+
+pinArrowToggle.addEventListener("click", () => {
+  setGlobeInteractionMode(
+    globeInteractionMode === "pin-arrow" ? "rotate" : "pin-arrow"
+  );
+});
+
+applyGlobeCoordinatesButton.addEventListener("click", applyPinnedGlobePoint);
+
 coordinateGlobe.addEventListener("pointerdown", (event) => {
+  if (globeInteractionMode === "click-select") return;
   globeDrag = { x: event.clientX, y: event.clientY };
   coordinateGlobe.setPointerCapture(event.pointerId);
 });
@@ -432,7 +601,6 @@ coordinateGlobe.addEventListener("pointermove", (event) => {
   );
   globeDrag = { x: event.clientX, y: event.clientY };
   drawCelestialGlobe();
-  setInterval(drawCelestialGlobe, 10000);
 });
 
 coordinateGlobe.addEventListener("pointerup", () => {
@@ -443,12 +611,19 @@ coordinateGlobe.addEventListener("pointercancel", () => {
   globeDrag = null;
 });
 
+coordinateGlobe.addEventListener("click", (event) => {
+  if (globeInteractionMode === "click-select") {
+    selectGlobePoint(event.clientX, event.clientY);
+  }
+});
+
 if ("ResizeObserver" in window) {
   new ResizeObserver(drawCelestialGlobe).observe(coordinateGlobe);
 } else {
   window.addEventListener("resize", drawCelestialGlobe);
 }
 drawCelestialGlobe();
+setInterval(drawCelestialGlobe, 10000);
 
 let currentVideoUuid = localStorage.getItem("videoUuid");
 let activeVideoPoll = 0;

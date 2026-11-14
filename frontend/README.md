@@ -11,6 +11,8 @@ Die Website ist danach unter <http://127.0.0.1:5173/> erreichbar. Mit `Ctrl+C` b
 
 Der Globus projiziert die Erdoberfläche anhand der aktuellen UTC-Zeit näherungsweise auf das RA/Dec-System. Die Earth-Textur wird von den Three.js-Beispielassets geladen; dafür ist eine Internetverbindung erforderlich. Ohne Textur bleiben Koordinatengitter und Zielpfeil sichtbar.
 
+In den Settings kannst du zwischen zwei Koordinaten-Auswahlmodi wechseln: Im Klickmodus übernimmt ein Klick auf die sichtbare Globusoberfläche die Koordinaten direkt. Im Fixiermodus bleibt der Pfeil beim Drehen stehen; „Apply coordinates“ übernimmt anschließend die Koordinaten unter dem Pfeil in die Eingabefelder.
+
 `start.sh` startet außerdem den Cache-Cleaner. Er entfernt GIFs aus `middleware/video_cache`, auf die 30 Minuten lang nicht zugegriffen wurde, und wird zusammen mit dem Server beendet. Solange ein GIF im Browser angezeigt wird, erneuert die Seite den Zugriff alle fünf Minuten.
 
 Einen anderen Port kannst du so wählen:

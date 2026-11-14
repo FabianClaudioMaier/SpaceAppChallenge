@@ -23,6 +23,18 @@
   </button>
   <span>Invert Pixel</span>
 </div>
+   <div class="setting-row globe-mode-setting">
+     <button id="click-select-toggle" class="globe-mode-toggle" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>Click globe to select coordinates</span>
+   </div>
+   <div class="setting-row globe-mode-setting">
+     <button id="pin-arrow-toggle" class="globe-mode-toggle" type="button" role="switch" aria-checked="false" aria-label="Pin arrow while rotating">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>Pin arrow while rotating</span>
+   </div>
 
     <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
@@ -90,6 +102,7 @@
             >Three.js planet textures</a>
           </p>
           <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
+          <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>
         </section>
       </div>
 
