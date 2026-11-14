@@ -1,0 +1,6 @@
+# cached SPHEREx/Gaia data and rendered frames (can be hundreds of MB)
+Cache/*
+!Cache/placeholder
+
+__pycache__/
+.venv/
