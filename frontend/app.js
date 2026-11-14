@@ -497,8 +497,13 @@ async function requestVideoUuid(DEC, RA, PIXELS, MS) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ DEC, RA, PIXELS, MS }),
   });
-  const result = await response.json();
-
+  const text = await response.text();
+  let result;
+  try {
+    result = JSON.parse(text);
+  } catch {
+    throw new Error(`Server antwortete nicht mit JSON (HTTP ${response.status}: ${text.slice(0, 80)}). Läuft start.sh?`);
+  }
   if (!response.ok) {
     throw new Error(result.error ?? `HTTP ${response.status}`);
   }
