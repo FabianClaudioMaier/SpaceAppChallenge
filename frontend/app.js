@@ -1,6 +1,7 @@
 const settingsButton = document.querySelector("#settings-button");
 const settingsPanel = document.querySelector("#settings-panel");
 const invertButton = document.querySelector("#invert-pixel");
+const diffButton = document.querySelector("#show-diff");
 const speedInput = document.querySelector("#speed");
 const speedValue = document.querySelector("#speed-value");
 const image = document.querySelector("#result-image");
@@ -630,6 +631,15 @@ let activeVideoPoll = 0;
 let videoHeartbeatTimer = null;
 const VIDEO_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
+// "Show diffs" (difference images): the middleware saves two GIFs per job,
+// <uuid>.gif (the frames) and <uuid>_diff.gif (the difference images).
+let showDiff = localStorage.getItem("showDiff") === "true";
+diffButton.setAttribute("aria-checked", String(showDiff));
+
+function videoUrlFor(uuid, diff) {
+  return `/api/videos/${encodeURIComponent(uuid)}${diff ? "_diff" : ""}.gif`;
+}
+
 function stopVideoHeartbeat() {
   if (videoHeartbeatTimer !== null) {
     clearInterval(videoHeartbeatTimer);
@@ -639,10 +649,11 @@ function stopVideoHeartbeat() {
 
 async function sendVideoHeartbeat(uuid) {
   if (uuid !== currentVideoUuid) return;
-  const videoUrl = `/api/videos/${encodeURIComponent(uuid)}.gif`;
 
   try {
-    const response = await fetch(videoUrl, { method: "HEAD", cache: "no-store" });
+    // Keep both GIFs alive (a HEAD request refreshes a file in the video cache),
+    // so switching to the difference images later still works.
+    const response = await fetch(videoUrlFor(uuid, false), { method: "HEAD", cache: "no-store" });
     if (response.status === 404) {
       if (uuid === currentVideoUuid) stopVideoHeartbeat();
       return;
@@ -650,6 +661,7 @@ async function sendVideoHeartbeat(uuid) {
     if (!response.ok) {
       console.warn(`Video heartbeat failed: HTTP ${response.status}`);
     }
+    await fetch(videoUrlFor(uuid, true), { method: "HEAD", cache: "no-store" });
   } catch (error) {
     console.warn("Could not refresh the video cache:", error);
   }
@@ -665,15 +677,28 @@ function startVideoHeartbeat(uuid) {
 
 async function displayVideo(uuid) {
   const poll = ++activeVideoPoll;
-  const videoUrl = `/api/videos/${encodeURIComponent(uuid)}.gif`;
+  const framesUrl = videoUrlFor(uuid, false);
 
   while (poll === activeVideoPoll) {
     try {
-      const response = await fetch(videoUrl, { method: "HEAD", cache: "no-store" });
+      // Wait for the frames GIF (the middleware saves it last, after the difference GIF)
+      const response = await fetch(framesUrl, { method: "HEAD", cache: "no-store" });
       if (response.ok) {
+        let videoUrl = framesUrl;
+        if (showDiff) {
+          const diffUrl = videoUrlFor(uuid, true);
+          const diff = await fetch(diffUrl, { method: "HEAD", cache: "no-store" });
+          if (diff.ok) {
+            videoUrl = diffUrl;
+          } else {
+            console.info("No difference images for this video, showing the frames");
+          }
+        }
         if (poll === activeVideoPoll) {
           image.src = videoUrl;
-          image.alt = "Generated astronomy animation";
+          image.alt = videoUrl === framesUrl
+            ? "Generated astronomy animation"
+            : "Difference images: what changed between the frames";
           startVideoHeartbeat(uuid);
         }
         return;
@@ -793,11 +818,22 @@ invertButton.addEventListener("click", () => {
   image.style.filter = isOn ? "none" : "invert(1)";
 });
 
+// Switches the shown GIF; "Invert GIF" is a filter on the image itself,
+// so it applies to both.
+diffButton.addEventListener("click", () => {
+  showDiff = diffButton.getAttribute("aria-checked") !== "true";
+  diffButton.setAttribute("aria-checked", String(showDiff));
+  localStorage.setItem("showDiff", String(showDiff));
+  if (currentVideoUuid) {
+    void displayVideo(currentVideoUuid);
+  }
+});
+
 speedInput.addEventListener("input", () => {
   speedValue.textContent = `${speedInput.value} ms`;
 });
 pixelSizeInput.addEventListener("input", () => {
-  pixelSizeValue.textContent = pixelSizeInput.value;
+  pixelSizeValue.textContent = `${pixelSizeInput.value} px`;
 });
 
 image.classList.add("zoom-ready");

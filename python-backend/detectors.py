@@ -11,9 +11,10 @@ D4-D6 the red channel of a colour picture, so objects that are much brighter at
 long wavelengths - brown dwarfs, cold planets - stand out red. To use only some
 detectors, pass e.g. parse_detectors("56").
 
-Stacking follows DeepSkyStacker's "median kappa-sigma": per detector, values
-far from the median (glitches) are thrown out, the rest are averaged, and
-noisier images and detectors count less (weights 1 / noise^2).
+Stacking follows DeepSkyStacker's "median kappa-sigma": per detector (or per
+colour channel, see combine), values far from the median (glitches) are thrown
+out, the rest are averaged, and noisier images and detectors count less
+(weights 1 / noise^2).
 """
 
 from __future__ import annotations
@@ -60,9 +61,11 @@ def select(exposures: list, detectors: tuple[int, ...] = ALL_DETECTORS) -> list:
 
 
 # At most this many images go into one frame. Fewer = faster (less to download
-# and align) but noisier. A frame (one SPHEREx pass over the spot) often has
-# 100+ images available. 36 = 6 per detector when all 6 are there.
-MAX_IMAGES_PER_FRAME = 36
+# and align) but noisier. Measured over 38 positions: a frame typically has
+# 36-43 images available, ~6 per detector. 24 = 4 per detector when all 6 are
+# there: 1/3 less to download than all 6, ~1.2x the noise, and still one image
+# to spare above MIN_IMAGES_PER_DETECTOR (glitch removal).
+MAX_IMAGES_PER_FRAME = 24
 
 
 # A detector needs at least this many images in a frame: the median of 3 throws
@@ -120,15 +123,34 @@ MIN_VALID_PER_PIXEL = 2
 
 
 def combine(images_by_detector: dict[int, list[np.ndarray]],
-            noise_by_detector: dict[int, list[float]]) -> dict[str, np.ndarray | None]:
+            noise_by_detector: dict[int, list[float]],
+            reject_across: str = "detector") -> dict[str, np.ndarray | None]:
     """Squash all images of one frame.
 
-    1. per detector: median kappa-sigma stack (stack_detector)
-    2. per colour channel and over all detectors: noise-weighted mean, per
-       pixel only of detectors with enough images there (weighted_mean)
+    1. median kappa-sigma stack (stack_detector), glitches removed
+         reject_across="detector": per detector (frames spanning days: each
+                                   detector has several images)
+         reject_across="channel":  over all images of a colour channel together
+                                   (one SPHEREx visit: ~1 image per detector,
+                                   but ~3 per channel, taken minutes apart)
+    2. per colour channel and over all stacks: noise-weighted mean, per
+       pixel only of stacks with enough images there (weighted_mean)
     -> {"blue": ..., "red": ..., "all": ...}; a channel is None when none of
        its detectors is in this frame. NaN pixels (not covered) are ignored.
     """
+    if reject_across == "channel":
+        stacks = {}
+        for name, dets in CHANNELS.items():
+            present = [d for d in dets if d in images_by_detector]
+            if present:
+                stacks[name] = stack_detector(
+                    [img for d in present for img in images_by_detector[d]],
+                    [n for d in present for n in noise_by_detector[d]])
+        result = {name: weighted_mean([stacks[name]]) if name in stacks else None
+                  for name in CHANNELS}
+        result["all"] = weighted_mean(list(stacks.values()))
+        return result
+
     stacks = {d: stack_detector(images_by_detector[d], noise_by_detector[d])
               for d in images_by_detector}
     result: dict[str, np.ndarray | None] = {

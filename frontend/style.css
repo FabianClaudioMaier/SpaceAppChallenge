@@ -94,6 +94,7 @@ color: white;}
 }
 
 #invert-pixel,
+#show-diff,
 .globe-mode-toggle {
   position: relative;
   flex: 0 0 56px;
@@ -106,6 +107,7 @@ color: white;}
 }
 
 #invert-pixel .toggle-knob,
+#show-diff .toggle-knob,
 .globe-mode-toggle .toggle-knob {
   position: absolute;
   top: 3px;
@@ -118,6 +120,7 @@ color: white;}
 }
 
 #invert-pixel[aria-checked="true"] .toggle-knob,
+#show-diff[aria-checked="true"] .toggle-knob,
 .globe-mode-toggle[aria-checked="true"] .toggle-knob {
   transform: translateX(24px);
   background: #6ca9ff;

@@ -39,8 +39,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         name = path[len(prefix):]
         try:
-            uuid = str(UUID(name.removesuffix(".gif")))
-            if name != f"{uuid}.gif":
+            # <uuid>.gif (frames) or <uuid>_diff.gif (difference images)
+            uuid = str(UUID(name.removesuffix(".gif").removesuffix("_diff")))
+            if name not in (f"{uuid}.gif", f"{uuid}_diff.gif"):
                 raise ValueError("Invalid video name")
         except ValueError:
             self.send_error(HTTPStatus.NOT_FOUND)

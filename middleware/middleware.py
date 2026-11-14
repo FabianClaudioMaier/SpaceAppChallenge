@@ -38,10 +38,16 @@ def main(DEC, RA, PIXELS, interval):
     try:
         Images = getImages(uuid)
         Video = convertToVideo(Images, interval)
+        # Difference images (frame minus reference, see backend.py): a second GIF,
+        # shown when "Show difference images" is on. None if the backend made none.
+        DiffImages = getDiffImages(uuid)
+        DiffVideo = convertToVideo(DiffImages, interval) if DiffImages else None
     finally:
         # Remove the uuid folder after collecting the images - also when that failed
         shutil.rmtree(f"../python-backend/Cache/usr/{uuid}", ignore_errors=True)
-    video_id = sendToFrontend(Video, uuid)
+    if DiffVideo is not None:
+        sendToFrontend(DiffVideo, uuid, suffix="_diff")
+    video_id = sendToFrontend(Video, uuid)  # last: the frontend waits for this one
     return video_id
 
 
@@ -118,6 +124,23 @@ def getImages(uuid):
     return Images
 
 
+def getDiffImages(uuid):
+    '''
+    Collects the difference images the backend wrote into the diff/ subfolder
+    of the uuid folder (call after getImages, which waits for the folder).
+
+    Parameters:
+    uuid: the uuid of the process
+
+    Output: list of difference images in jpg format, sorted (empty if there are none)
+    '''
+    PATH = f"../python-backend/Cache/usr/{uuid}/diff"
+    if not os.path.isdir(PATH):
+        return []
+    return [f"{PATH}/{filename}" for filename in sorted(os.listdir(PATH))
+            if filename.endswith(".jpg")]
+
+
 def convertToVideo(Images, interval):
     """
     Converts images into a GIF, sorting by timestamps when provided.
@@ -167,13 +190,14 @@ def convertToVideo(Images, interval):
 
 
 
-def sendToFrontend(Video, uuid):
+def sendToFrontend(Video, uuid, suffix=""):
     '''
     Saves the video in gif format to the video_cache folder and returns the video_id
 
     Parameters:
     Video: video in gif format
     uuid: uuid of the process
+    suffix: appended to the file name, e.g. "_diff" -> <uuid>_diff.gif
 
     Output: uuid of the process, which can be used to retrieve the video from the video_cache
     '''
@@ -181,7 +205,7 @@ def sendToFrontend(Video, uuid):
     video_cache_dir = Path(__file__).resolve().parent / "video_cache"
     video_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    video_path = video_cache_dir / f"{uuid}.gif"
+    video_path = video_cache_dir / f"{uuid}{suffix}.gif"
     with video_path.open("wb") as f:
         f.write(Video)
     return uuid # should send the video_id to the frontend, but for now we just return the uuid

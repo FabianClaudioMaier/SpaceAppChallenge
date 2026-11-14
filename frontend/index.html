@@ -18,11 +18,17 @@
 
   <div id="settings-panel" class="settings-panel" hidden>
    <div class="setting-row">
-  <button id="invert-pixel" type="button" role="switch" aria-checked="false" aria-label="Invert Pixel">
+  <button id="invert-pixel" type="button" role="switch" aria-checked="false" aria-label="Invert GIF">
     <span class="toggle-knob" aria-hidden="true"></span>
   </button>
-  <span>Invert Pixel</span>
+  <span>Invert GIF</span>
 </div>
+   <div class="setting-row">
+     <button id="show-diff" type="button" role="switch" aria-checked="false" aria-label="Show diffs">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>Show diffs</span>
+   </div>
    <div class="setting-row globe-mode-setting">
      <button id="click-select-toggle" class="globe-mode-toggle" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
        <span class="toggle-knob" aria-hidden="true"></span>
@@ -39,7 +45,7 @@
     <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
 
-        <label for="pixel-size">Pixel Size <output id="pixel-size-value" for="pixel-size">255</output></label>
+        <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">255 px</output></label>
 <input id="pixel-size" type="range" min="50" max="500" step="1" value="255">
 <button id="apply-settings" type="submit" form="coordinate-form">Apply</button>
   </div>
