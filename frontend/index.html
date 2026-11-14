@@ -25,11 +25,12 @@
     <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
 
-    <button id="zoom-button" type="button" aria-pressed="false">Zoom</button>
-<<p id="zoom-info" hidden>ⓘ Click or select window to zoom</p>
+    <label for="pixel-size">Pixel Size <output id="pixel-size-value" for="pixel-size">255</output></label>
+<input id="pixel-size" type="range" min="50" max="500" step="1" value="255">
+<p id="zoom-info">ⓘ Click or select window to zoom</p>
   </div>
 </div>
-    <form action="/action_page.php">
+    <form id="coordinate-form">
 <div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 100px; margin-bottom: 20px; position: relative; top: 440px; right: 150px">
     <div>
   <input type="text" id="fname" name="fname" placeholder="Right Ascension" aria-label="Right Ascension">

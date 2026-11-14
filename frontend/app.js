@@ -4,11 +4,77 @@ const invertButton = document.querySelector("#invert-pixel");
 const speedInput = document.querySelector("#speed");
 const speedValue = document.querySelector("#speed-value");
 const image = document.querySelector("form img");
-const zoomButton = document.querySelector("#zoom-button");
-const zoomInfo = document.querySelector("#zoom-info");const zoomSelection = document.querySelector("#zoom-selection");
+const pixelSizeInput = document.querySelector("#pixel-size");
+const pixelSizeValue = document.querySelector("#pixel-size-value");
+const zoomSelection = document.querySelector("#zoom-selection");
 const zoomDialog = document.querySelector("#zoom-dialog");
 const zoomCanvas = document.querySelector("#zoom-canvas");
 const zoomClose = document.querySelector("#zoom-close");
+const coordinateForm = document.querySelector("#coordinate-form");
+const rightAscensionInput = document.querySelector("#fname");
+const declinationInput = document.querySelector("#lname");
+const submitButton = coordinateForm.querySelector('input[type="submit"]');
+
+let currentVideoUuid = localStorage.getItem("videoUuid");
+
+rightAscensionInput.value = localStorage.getItem("rightAscension") ?? "";
+declinationInput.value = localStorage.getItem("declination") ?? "";
+
+rightAscensionInput.addEventListener("input", () => {
+  localStorage.setItem("rightAscension", rightAscensionInput.value);
+});
+
+declinationInput.addEventListener("input", () => {
+  localStorage.setItem("declination", declinationInput.value);
+});
+
+async function requestVideoUuid(DEC, RA, PIXELS, MS) {
+  const response = await fetch("/api/send-to-backend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ DEC, RA, PIXELS, MS }),
+  });
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.error ?? `HTTP ${response.status}`);
+  }
+  if (typeof result.uuid !== "string" || !result.uuid) {
+    throw new Error("Middleware returned no UUID");
+  }
+  return result.uuid;
+}
+
+coordinateForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const raText = rightAscensionInput.value.trim();
+  const decText = declinationInput.value.trim();
+  const RA = Number(raText);
+  const DEC = Number(decText);
+  if (!raText || !decText || !Number.isFinite(RA) || !Number.isFinite(DEC)) {
+    alert("Enter numeric Right Ascension and Declination values.");
+    return;
+  }
+
+  submitButton.disabled = true;
+  try {
+    const uuid = await requestVideoUuid(
+      DEC,
+      RA,
+      Number(pixelSizeInput.value),
+      Number(speedInput.value)
+    );
+    currentVideoUuid = uuid;
+    localStorage.setItem("videoUuid", uuid);
+    console.info("Middleware returned UUID:", currentVideoUuid);
+  } catch (error) {
+    console.error("Submission failed:", error);
+    alert(`Submission failed: ${error.message}`);
+  } finally {
+    submitButton.disabled = false;
+  }
+});
 
 settingsButton.addEventListener("click", () => {
   const open = settingsPanel.hidden;
@@ -26,6 +92,11 @@ invertButton.addEventListener("click", () => {
 speedInput.addEventListener("input", () => {
   speedValue.textContent = `${speedInput.value} ms`;
 });
+pixelSizeInput.addEventListener("input", () => {
+  pixelSizeValue.textContent = pixelSizeInput.value;
+});
+
+image.classList.add("zoom-ready");
 
 let selectionStart = null;
 let activePointerId = null;
@@ -33,21 +104,6 @@ let activePointerId = null;
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
-
-function zoomEnabled() {
-  return zoomButton.getAttribute("aria-pressed") === "true";
-}
-
-function setZoomEnabled(enabled) {
-  zoomButton.setAttribute("aria-pressed", String(enabled));
-  zoomInfo.hidden = !enabled;
-  image.classList.toggle("zoom-ready", enabled);
-  zoomSelection.hidden = true;
-}
-
-zoomButton.addEventListener("click", () => {
-  setZoomEnabled(!zoomEnabled());
-});
 
 function openZoom(region, imageRect) {
   const scaleX = image.naturalWidth / imageRect.width;
@@ -81,7 +137,7 @@ function openZoom(region, imageRect) {
 }
 
 image.addEventListener("pointerdown", (event) => {
-  if (!zoomEnabled() || activePointerId !== null || !image.naturalWidth) return;
+  if (activePointerId !== null || !image.naturalWidth) return;
 
   activePointerId = event.pointerId;
   selectionStart = {
@@ -164,8 +220,4 @@ zoomDialog.addEventListener("click", (event) => {
   ) {
     zoomDialog.close();
   }
-});
-
-zoomDialog.addEventListener("close", () => {
-  setZoomEnabled(false);
 });

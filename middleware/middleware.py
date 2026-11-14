@@ -1,4 +1,3 @@
-from PIL import Image
 from datetime import datetime
 from io import BytesIO
 import os
@@ -6,19 +5,18 @@ import time
 from uuid import uuid4
 
 
-def sendToBackend(DEC, RA, PIXELS):
+def sendToBackend(DEC, RA, PIXELS, MS):
     '''
-    Creates a uuid.
-    Starts the backend process in a shell script with the given DEC and RA coordinates, PIXELS, and uuid. 
-    The backend process will generate images based on these coordinates. 
-    The uuid is returned to the frontend, which can then use it to retrieve the images.
+    Creates a uuid for the submitted coordinates and settings.
+    The backend process is not connected yet.
 
     Parameters:
     DEC: Declination coordinate in degrees
     RA: Right Ascension coordinate in degrees
     PIXELS: Number of pixels to generate
+    MS: Milliseconds to wait between each image in the gif
 
-    Output: uuid of the process, which can be used to retrieve the images from the uuid_cache
+    Output: uuid for this submission
     '''
     return str(uuid4())
 
@@ -46,6 +44,7 @@ def convertToVideo(Images, Timestamps=None):
 
     Output: GIF image as bytes.
     """
+    from PIL import Image
 
     if not Images:
         raise ValueError(

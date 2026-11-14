@@ -91,11 +91,10 @@ input[type="submit"] {
   justify-content: space-between;
 }
 
-#speed {
+#speed,
+#pixel-size {
   width: 100%;
   margin: 10px 0 18px;
-}#zoom-button[aria-pressed="true"] {
-  background: #6ca9ff;
 }
 
 #zoom-info {
@@ -104,10 +103,6 @@ input[type="submit"] {
   border-radius: 8px;
   background: #15305a;
   font-size: 14px;
-}
-
-#zoom-info[hidden] {
-  display: none;
 }
 
 .zoom-ready {
