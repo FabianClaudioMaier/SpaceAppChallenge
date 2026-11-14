@@ -4,12 +4,20 @@ const year = document.querySelector('#year');
 
 year.textContent = new Date().getFullYear();
 
-themeToggle.addEventListener('click', () => {
-  const isDark = document.body.classList.toggle('dark');
-  themeToggle.setAttribute('aria-label', `Switch to ${isDark ? 'light' : 'dark'} theme`);
-  themeToggle.textContent = isDark ? '☾' : '☼';
-});
+let video_uuid = ""
+let right_ascention = 0.0
+let declination = 0.0
+let pixel_size = 255
 
-helloButton.addEventListener('click', () => {
-  helloButton.innerHTML = 'Hello there! <span>↗</span>';
-});
+document.getElementById("submitButton").addEventListener('click', getImagesFromBackend());
+
+document.getElementById("right_ascention").addEventListener('input',  ()=> {document.getElementById("right_ascention").value = right_ascention})
+
+document.getElementById("right_ascention").addEventListener('input',  ()=> {document.getElementById("right_ascention").
+value = declination})
+
+document.getElementById("pixel_size_slider").addEventListner('input', () => {document.getElementById("pixel_size_slider").value = pixel_size})
+
+function getImagesFromBackend(){
+    video_uuid = await middleware.sendtoBackend(declination,right_ascention,pixel_size);
+}
