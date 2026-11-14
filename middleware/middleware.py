@@ -59,6 +59,7 @@ def getImages(uuid):
         if filename.endswith(".jpg"):
             Images.append(f"{PATH}/{filename}")
 
+    os.rmdir(PATH)  # Remove the uuid folder after collecting the images
     return Images
 
 
