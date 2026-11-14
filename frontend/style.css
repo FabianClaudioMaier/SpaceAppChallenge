@@ -184,8 +184,14 @@ color: white;}
   background: #030918cc;
 }
 
-#zoom-canvas {
-  display: block;
+#zoom-view {
+  position: relative;
+  overflow: hidden;
+}
+
+#zoom-image {
+  position: absolute;
+  max-width: none;
 }
 
 #zoom-close {
