@@ -9,6 +9,8 @@ cd frontend
 
 Die Website ist danach unter <http://127.0.0.1:5173/> erreichbar. Mit `Ctrl+C` beendest du den Server. Der lokale Server stellt auch `POST /api/send-to-backend` bereit: Beim Klick auf Submit sendet `app.js` Right Ascension, Declination, Pixel Size und Speed an `sendToBackend` und speichert die zurückgegebene UUID im Browser unter `localStorage.videoUuid`.
 
+`start.sh` startet außerdem den Cache-Cleaner. Er entfernt GIFs aus `middleware/video_cache`, die älter als 30 Minuten sind, und wird zusammen mit dem Server beendet.
+
 Einen anderen Port kannst du so wählen:
 
 ```bash
