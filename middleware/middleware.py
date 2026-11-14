@@ -3,7 +3,7 @@ from datetime import datetime
 from io import BytesIO
 import os
 import time
-import uuid
+from uuid import uuid4
 
 
 def sendToBackend(DEC, RA, PIXELS):
@@ -20,9 +20,7 @@ def sendToBackend(DEC, RA, PIXELS):
 
     Output: uuid of the process, which can be used to retrieve the images from the uuid_cache
     '''
-    uuid = str(uuid.uuid4())
-
-    return uuid
+    return str(uuid4())
 
 
 def getImages(uuid):
@@ -38,12 +36,13 @@ def getImages(uuid):
     pass
 
 
-def convertToVideo(Images):
+def convertToVideo(Images, Timestamps=None):
     """
-    Converts the already sorted images into a GIF.
+    Converts images into a GIF, sorting by timestamps when provided.
 
     Parameters:
     Images: List of JPG image paths.
+    Timestamps: Optional timestamps corresponding to Images in UTC format.
 
     Output: GIF image as bytes.
     """
@@ -53,10 +52,33 @@ def convertToVideo(Images):
             "At least one image is required to create a GIF"
         )
 
-    frames = []
+    image_paths = list(Images)
+    if Timestamps is not None:
+        if len(image_paths) != len(Timestamps):
+            raise ValueError("Images and Timestamps must have the same length")
 
+        image_timestamps = []
+        for i, (image, timestamp) in enumerate(zip(image_paths, Timestamps)):
+            if not isinstance(image, str) or not image.lower().endswith('.jpg'):
+                raise ValueError(f"Image at index {i} is not a valid JPG file")
+            if not isinstance(timestamp, str):
+                raise ValueError(f"Timestamp at index {i} is not a valid string")
+            try:
+                parsed_timestamp = datetime.strptime(
+                    timestamp, '%Y-%m-%d %H:%M:%S'
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Timestamp at index {i} must use YYYY-MM-DD HH:MM:SS format"
+                ) from exc
+            image_timestamps.append((parsed_timestamp, image))
+
+        image_timestamps.sort(key=lambda item: item[0])
+        image_paths = [image for _, image in image_timestamps]
+
+    frames = []
     try:
-        for i, image in enumerate(Images):
+        for i, image in enumerate(image_paths):
 
             if not isinstance(image, str) or not image.lower().endswith('.jpg'):
                 raise ValueError(
@@ -67,7 +89,6 @@ def convertToVideo(Images):
                 frames.append(img.convert('RGB'))
 
         output = BytesIO()
-
         frames[0].save(
             output,
             format='GIF',
@@ -76,7 +97,6 @@ def convertToVideo(Images):
             duration=500,
             loop=0,
         )
-
         return output.getvalue()
 
     finally:
@@ -85,17 +105,19 @@ def convertToVideo(Images):
 
 
 
-def sendToFrontend(Video, uuid):
+def sendToFrontend(Video, uuid=None):
     '''
     Saves the video in gif format to the video_cache folder and returns the video_id
 
     Parameters:
     Video: video in gif format
-    uuid: the uuid of the process
+    uuid: optional uuid of the process
     '''
 
-    if not os.path.exists("video_cache"):
-        os.makedirs("video_cache")
+    if uuid is None:
+        uuid = str(uuid4())
+
+    os.makedirs("video_cache", exist_ok=True)
 
     '''
     Output: video_id of the video
