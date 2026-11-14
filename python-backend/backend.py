@@ -16,7 +16,8 @@ Called by the middleware:
 
 What happens:
     1. Cache/usr/.pending_<UUID>/ is created
-    2. the frames are built into it:
+    2. the frames are built into it (or, for a request identical to an earlier
+       one, copied from Cache/results/ - see build_frames_cached):
          frame_000.jpg, frame_001.jpg, ...   oldest first, PIXELS x PIXELS, colour
                                              (blue = D1-D3 0.75-2.4 um, red = D4-D6 2.4-5 um)
          diff/diff_000.jpg, ...              each frame minus the average of all frames
@@ -51,11 +52,13 @@ Pipeline:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -98,6 +101,11 @@ BACKEND_DIR = Path(__file__).resolve().parent
 #     headers/<collection>/<obs_id>/D<n>.json      IMAGE header of one image (any position)
 #     cutouts/<collection>/<obs_id>/D<n>_<coord>_h<half>.npz
 #                                                 downloaded pixel square of one image
+#     coverage/<collection>/<coord>_p<pixels>.json
+#                                                 how much of the frame each image covers
+#     results/<collection>/<coord>_p<pixels>/     finished frames of an earlier identical
+#                                                 request (+ result.json), see build_frames_cached
+#     results/.staging_<uuid>/                    a stored result being copied out (temporary)
 #     usr/.pending_<uuid>/                        job still running
 #     usr/<uuid>/                                 finished job, picked up + deleted by the middleware
 CACHE_DIR = BACKEND_DIR / "Cache"
@@ -363,18 +371,31 @@ def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int,
 
     Only the headers are needed (cached per image, see image_header), fetched
     in parallel - much cheaper than downloading pixels that turn out unusable.
+    The answers are cached per position + frame size in Cache/coverage/: each
+    one needs a WCS built from the header (~13 ms, the lens-distortion terms
+    make it slow), which is ~4 s for a typical spot. Only images not in the
+    cache yet are computed; "header not available" is not cached (retried).
     """
-    test_ra, test_dec = frame_test_points(ra, dec, pixels)
+    path = CACHE_DIR / "coverage" / collection / f"{_coord_key(ra, dec)}_p{pixels}.json"
+    known: dict[tuple[str, int], float] = {(o, d): c for o, d, c in (_read_json(path) or [])}
+    todo = [e for e in exposures if (e.obs_id, e.detector) not in known]
+    if todo:
+        test_ra, test_dec = frame_test_points(ra, dec, pixels)
 
-    def one(e: Exposure) -> float | None:
-        try:
-            return frame_coverage(image_header(e, collection)[0], test_ra, test_dec)
-        except Exception as exc:
-            log.warning("no header for %s D%d: %s", e.obs_id, e.detector, exc)
-            return None
+        def one(e: Exposure) -> float | None:
+            try:
+                return frame_coverage(image_header(e, collection)[0], test_ra, test_dec)
+            except Exception as exc:
+                log.warning("no header for %s D%d: %s", e.obs_id, e.detector, exc)
+                return None
 
-    with ThreadPoolExecutor(DOWNLOAD_THREADS) as pool:
-        return {(e.obs_id, e.detector): c for e, c in zip(exposures, pool.map(one, exposures))}
+        with ThreadPoolExecutor(DOWNLOAD_THREADS) as pool:
+            new = {(e.obs_id, e.detector): c for e, c in zip(todo, pool.map(one, todo))
+                   if c is not None}
+        if new:
+            known.update(new)
+            _write_json(path, [[o, d, c] for (o, d), c in sorted(known.items())])
+    return {(e.obs_id, e.detector): known.get((e.obs_id, e.detector)) for e in exposures}
 
 
 def plan_frames(passes: list[list[Exposure]], min_frames: int = MIN_FRAMES,
@@ -1224,6 +1245,107 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
 
 
 # --------------------------------------------------------------------------- #
+# Finished results: an identical request is copied instead of built again
+# --------------------------------------------------------------------------- #
+# The same position + frame size always gives the same frames - as long as the
+# image list and the code are the same. So every complete result is kept in
+# Cache/results/ together with a fingerprint of both (backend.py + detectors.py
+# + the image list): a new image list or ANY code change makes old results count
+# as missing, so they are never stale. Results with failed images aren't kept.
+RESULTS_DIR = CACHE_DIR / "results"
+RESULT_META = "result.json"
+
+
+def _result_dir(collection: str, ra: float, dec: float, pixels: int) -> Path:
+    return RESULTS_DIR / collection / f"{_coord_key(ra, dec)}_p{pixels}"
+
+
+def _result_fingerprint(exposures: list[Exposure]) -> str:
+    h = hashlib.sha256()
+    for source in (Path(__file__), Path(detectors.__file__)):
+        h.update(source.read_bytes())
+    for e in sorted(exposures, key=lambda e: (e.obs_id, e.detector)):
+        h.update(f"{e.obs_id}/{e.detector};".encode())
+    return h.hexdigest()
+
+
+def _result_files(meta: dict) -> list[str]:
+    """The image files of a result, relative to its folder (e.g. "diff/diff_000.jpg")."""
+    return list(meta["images"]) + list(meta.get("difference_images") or [])
+
+
+def load_result(collection: str, ra: float, dec: float, pixels: int, fingerprint: str,
+                out_dir: Path, user_id: str) -> dict | None:
+    """Copy a stored result into out_dir -> its metadata; None if there is no valid one.
+
+    The files are first copied to a staging folder outside Cache/usr/ and only
+    then moved into out_dir, so a failed copy never leaves half a result there
+    (and the backend still never deletes anything in Cache/usr/).
+    """
+    src = _result_dir(collection, ra, dec, pixels)
+    staging = RESULTS_DIR / f".staging_{user_id}"
+    try:
+        stored = _read_json(src / RESULT_META)
+        if not stored or stored.get("fingerprint") != fingerprint:
+            return None
+        meta = stored["meta"]
+        files = _result_files(meta)
+        shutil.rmtree(staging, ignore_errors=True)
+        for name in files:
+            (staging / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src / name, staging / name)
+        for name in files:  # a rename (no copying) - both are inside Cache/
+            (out_dir / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(staging / name, out_dir / name)
+        return meta
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("stored result not usable (%s), building it again", exc)
+        return None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def save_result(meta: dict, out_dir: Path, collection: str, ra: float, dec: float,
+                pixels: int, fingerprint: str) -> None:
+    """Keep a finished result for identical requests. Atomic: built in a temp
+    folder that is renamed into place, so readers never see half a result."""
+    dest = _result_dir(collection, ra, dec, pixels)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
+    old = dest.with_name(f".{dest.name}.{os.getpid()}.old")
+    try:
+        shutil.rmtree(tmp, ignore_errors=True)
+        for name in _result_files(meta):
+            (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(out_dir / name, tmp / name)
+        _write_json(tmp / RESULT_META, {"fingerprint": fingerprint, "meta": meta})
+        if dest.exists():
+            os.rename(dest, old)
+        os.rename(tmp, dest)
+    except OSError as exc:  # e.g. another job stored the same result at the same moment
+        log.warning("could not store the result for reuse: %s", exc)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def build_frames_cached(ra: float, dec: float, pixels: int, out_dir: Path, user_id: str) -> dict:
+    """build_frames, but an identical earlier request is copied from Cache/results/."""
+    collection = latest_collection()
+    fingerprint = _result_fingerprint(find_exposures(ra, dec, collection))
+    meta = load_result(collection, ra, dec, pixels, fingerprint, out_dir, user_id)
+    if meta is not None:
+        log.info("identical request done before: result copied from %s",
+                 _result_dir(collection, ra, dec, pixels))
+        return {**meta, "from_cache": True}
+    meta = build_frames(ra, dec, pixels, out_dir)
+    if meta["images_failed"] == 0:
+        save_result(meta, out_dir, collection, ra, dec, pixels, fingerprint)
+    else:
+        log.info("result not kept for reuse: %d images failed", meta["images_failed"])
+    return {**meta, "from_cache": False}
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 def main(argv: list[str]) -> int:
@@ -1249,7 +1371,7 @@ def main(argv: list[str]) -> int:
 
     t0 = time.time()
     try:
-        meta = build_frames(ra, dec, pixels, pending)
+        meta = build_frames_cached(ra, dec, pixels, pending, user_id)
         meta = {"status": "ok", "exit_code": EXIT_OK, **meta}
     except BackendError as exc:
         meta = {"status": "error", "exit_code": exc.code, "error": str(exc)}

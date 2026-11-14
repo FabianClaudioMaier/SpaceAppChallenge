@@ -473,7 +473,7 @@ async function displayVideo(uuid) {
     } catch (error) {
       console.warn("Waiting for the video server:", error);
     }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
