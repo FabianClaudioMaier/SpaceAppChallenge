@@ -2,9 +2,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-#.venv/
-#venv/
-#.env
+.venv/
+venv/
+.env
+.vscode/
 
 # ---- Generated data (can be hundreds of MB, rebuilt on demand) -----------
 # Backend: downloaded SPHEREx squares, archive query results and the
