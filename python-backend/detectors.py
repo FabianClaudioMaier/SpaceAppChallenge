@@ -112,13 +112,20 @@ def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME,
 KAPPA = 4.0
 RELATIVE_TOLERANCE = 0.25
 
+# A detector's stack is only trusted at a pixel where at least this many of its
+# images had data there: with a single value a glitch can't be recognised. (At
+# the edges of images that only partly cover the frame this happens a lot.)
+# If no detector of a channel reaches it at a pixel, all are used there anyway.
+MIN_VALID_PER_PIXEL = 2
+
 
 def combine(images_by_detector: dict[int, list[np.ndarray]],
             noise_by_detector: dict[int, list[float]]) -> dict[str, np.ndarray | None]:
     """Squash all images of one frame.
 
     1. per detector: median kappa-sigma stack (stack_detector)
-    2. per colour channel and over all detectors: noise-weighted mean
+    2. per colour channel and over all detectors: noise-weighted mean, per
+       pixel only of detectors with enough images there (weighted_mean)
     -> {"blue": ..., "red": ..., "all": ...}; a channel is None when none of
        its detectors is in this frame. NaN pixels (not covered) are ignored.
     """
@@ -131,14 +138,16 @@ def combine(images_by_detector: dict[int, list[np.ndarray]],
     return result
 
 
-def stack_detector(images: list[np.ndarray], noises: list[float]) -> tuple[np.ndarray, float]:
-    """Median kappa-sigma stack of one detector's images -> (image, its noise).
+def stack_detector(images: list[np.ndarray], noises: list[float]) -> tuple[np.ndarray, float, np.ndarray]:
+    """Median kappa-sigma stack of one detector's images -> (image, its noise, valid count).
 
     Glitches (cosmic rays etc.) appear in one image only, far from the median,
     and are thrown out; the remaining values are averaged with weights
-    1 / noise^2, which is less noisy than the median alone.
+    1 / noise^2, which is less noisy than the median alone. "valid count" is,
+    per pixel, how many images had data there.
     """
     stack = np.asarray(images, dtype=np.float32)
+    n_valid = np.isfinite(stack).sum(axis=0)
     sigma = np.asarray(noises, dtype=np.float32)
     usable = np.isfinite(sigma) & (sigma > 0)
     sigma = np.where(usable, sigma, np.median(sigma[usable]) if usable.any() else 1.0)
@@ -153,18 +162,24 @@ def stack_detector(images: list[np.ndarray], noises: list[float]) -> tuple[np.nd
     mean[total == 0] = np.nan
     good = total[total > 0]
     noise = float(1.0 / np.sqrt(np.median(good))) if good.size else float("inf")
-    return mean.astype(np.float32), noise
+    return mean.astype(np.float32), noise, n_valid
 
 
-def weighted_mean(stacks: list[tuple[np.ndarray, float]]) -> np.ndarray | None:
-    """Pixel-wise mean of several (image, noise) stacks, weighted 1 / noise^2; None if empty."""
+def weighted_mean(stacks: list[tuple[np.ndarray, float, np.ndarray]]) -> np.ndarray | None:
+    """Pixel-wise mean of several (image, noise, valid count) stacks, weighted 1 / noise^2.
+
+    Per pixel, stacks with fewer than MIN_VALID_PER_PIXEL images there are left
+    out if another stack has enough (see MIN_VALID_PER_PIXEL). None if empty.
+    """
     if not stacks:
         return None
+    trusted = [count >= MIN_VALID_PER_PIXEL for _, _, count in stacks]
+    any_trusted = np.logical_or.reduce(trusted)
     num = np.zeros_like(stacks[0][0], dtype=np.float64)
     den = np.zeros_like(num)
-    for img, noise in stacks:
+    for (img, noise, _), trust in zip(stacks, trusted):
         w = 1.0 / noise**2 if np.isfinite(noise) and noise > 0 else 0.0
-        ok = np.isfinite(img)
+        ok = np.isfinite(img) & (trust | ~any_trusted)
         num += np.where(ok, img, 0.0) * w
         den += ok * w
     with np.errstate(invalid="ignore", divide="ignore"):

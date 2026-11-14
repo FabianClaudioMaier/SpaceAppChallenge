@@ -1,3 +1,7 @@
+:root {
+  --submit-offset: 280px;
+}
+
 body {
   min-height: 100vh;
   background-color: #050b1b;
@@ -25,36 +29,39 @@ p {
   font-size: 20px;
 }
 
-input[type="submit"] {
+input[type="submit"] {left: var(--submit-offset);
   border-radius: 12px;
   padding: 12px 28px;
   font-size: 20px;
   font-family: "DM Sans", sans-serif;
-  background-color: #4c4ab7;
-  color: white;
-  border: 0;
-  cursor: pointer;
+  background-color: #133365;
+color: white;}
+#fname,
+#lname {
+  transform: translateY(10px) scale(1.25);
 }
-
 .settings {
   position: fixed;
   top: 16px;
-  right: 100px;
-  width: 260px;
+  left: calc(50% + var(--submit-offset));
+  transform: translateX(-50%);
+  width: 300px;
   z-index: 100;
   font-family: "DM Sans", sans-serif;
 }
 
 #settings-button {
   display: block;
-  margin-left: auto;
-  padding: 10px 14px;
+  margin: 0 auto;
+  min-width: 220px;
+  padding: 16px 28px;
   border: 0;
   border-radius: 8px;
+  font-size: 24px;
   cursor: pointer;
 }
 
-.settings-panel {
+.settings-panel {font-family: "Space Grotesk", sans-serif;
   margin-top: 8px;
   padding: 16px;
   color: white;
@@ -62,6 +69,9 @@ input[type="submit"] {
   border: 1px solid #55709e;
   border-radius: 12px;
   box-shadow: 0 8px 24px #0008;
+}.settings-panel button,
+.settings-panel p {
+  font-family: inherit;
 }
 
 .settings-panel[hidden] {
@@ -82,7 +92,30 @@ input[type="submit"] {
   cursor: pointer;
 }
 
-#invert-pixel[aria-pressed="true"] {
+#invert-pixel {
+  position: relative;
+  flex: 0 0 56px;
+  width: 56px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #8fb3e6;
+  border-radius: 999px;
+  background: #29435f;
+}
+
+#invert-pixel .toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.2s, background-color 0.2s;
+}
+
+#invert-pixel[aria-checked="true"] .toggle-knob {
+  transform: translateX(24px);
   background: #6ca9ff;
 }
 
@@ -95,6 +128,20 @@ input[type="submit"] {
 #pixel-size {
   width: 100%;
   margin: 10px 0 18px;
+}#pixel-size {
+  display: block;
+  margin-bottom: 0;
+}
+
+#apply-settings {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 24px 0;
+  padding: 12px 14px;
+  background: #6ca9ff;
+  color: #081b3a;
+  font-weight: 700;
 }
 
 #zoom-info {

@@ -14,6 +14,9 @@ const coordinateForm = document.querySelector("#coordinate-form");
 const rightAscensionInput = document.querySelector("#fname");
 const declinationInput = document.querySelector("#lname");
 const submitButton = coordinateForm.querySelector('input[type="submit"]');
+const applySettingsButton = document.querySelector("#apply-settings");
+let appliedPixelSize = Number(pixelSizeInput.value);
+let appliedSpeed = Number(speedInput.value);
 const coordinateGlobe = document.querySelector("#coordinate-globe");
 const globeStatus = document.querySelector("#globe-status");
 const globeContext = coordinateGlobe.getContext("2d");
@@ -556,10 +559,9 @@ settingsButton.addEventListener("click", () => {
 });
 
 invertButton.addEventListener("click", () => {
-  const wasOn = invertButton.getAttribute("aria-pressed") === "true";
-  invertButton.setAttribute("aria-pressed", String(!wasOn));
-  invertButton.textContent = wasOn ? "Aus" : "An";
-  image.style.filter = wasOn ? "none" : "invert(1)";
+  const isOn = invertButton.getAttribute("aria-checked") === "true";
+  invertButton.setAttribute("aria-checked", String(!isOn));
+  image.style.filter = isOn ? "none" : "invert(1)";
 });
 
 speedInput.addEventListener("input", () => {
