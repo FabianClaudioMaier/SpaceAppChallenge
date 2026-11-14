@@ -452,6 +452,41 @@ drawCelestialGlobe();
 
 let currentVideoUuid = localStorage.getItem("videoUuid");
 let activeVideoPoll = 0;
+let videoHeartbeatTimer = null;
+const VIDEO_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+
+function stopVideoHeartbeat() {
+  if (videoHeartbeatTimer !== null) {
+    clearInterval(videoHeartbeatTimer);
+    videoHeartbeatTimer = null;
+  }
+}
+
+async function sendVideoHeartbeat(uuid) {
+  if (uuid !== currentVideoUuid) return;
+  const videoUrl = `/api/videos/${encodeURIComponent(uuid)}.gif`;
+
+  try {
+    const response = await fetch(videoUrl, { method: "HEAD", cache: "no-store" });
+    if (response.status === 404) {
+      if (uuid === currentVideoUuid) stopVideoHeartbeat();
+      return;
+    }
+    if (!response.ok) {
+      console.warn(`Video heartbeat failed: HTTP ${response.status}`);
+    }
+  } catch (error) {
+    console.warn("Could not refresh the video cache:", error);
+  }
+}
+
+function startVideoHeartbeat(uuid) {
+  stopVideoHeartbeat();
+  videoHeartbeatTimer = window.setInterval(
+    () => void sendVideoHeartbeat(uuid),
+    VIDEO_HEARTBEAT_INTERVAL_MS
+  );
+}
 
 async function displayVideo(uuid) {
   const poll = ++activeVideoPoll;
@@ -464,6 +499,7 @@ async function displayVideo(uuid) {
         if (poll === activeVideoPoll) {
           image.src = videoUrl;
           image.alt = "Generated astronomy animation";
+          startVideoHeartbeat(uuid);
         }
         return;
       }
@@ -480,6 +516,12 @@ async function displayVideo(uuid) {
 if (currentVideoUuid) {
   void displayVideo(currentVideoUuid);
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && videoHeartbeatTimer !== null) {
+    void sendVideoHeartbeat(currentVideoUuid);
+  }
+});
 
 rightAscensionInput.value = localStorage.getItem("rightAscension") ?? "";
 declinationInput.value = localStorage.getItem("declination") ?? "";
@@ -537,6 +579,7 @@ coordinateForm.addEventListener("submit", async (event) => {
       Number(pixelSizeInput.value),
       Number(speedInput.value)
     );
+    stopVideoHeartbeat();
     currentVideoUuid = uuid;
     localStorage.setItem("videoUuid", uuid);
     image.removeAttribute("src");
