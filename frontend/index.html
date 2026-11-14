@@ -17,10 +17,12 @@
   <button id="settings-button" type="button" aria-controls="settings-panel" aria-expanded="false">⚙ Settings</button>
 
   <div id="settings-panel" class="settings-panel" hidden>
-    <div class="setting-row">
-      <button id="invert-pixel" type="button" aria-pressed="false">Aus</button>
-      <span>Invert Pixel</span>
-    </div>
+   <div class="setting-row">
+  <button id="invert-pixel" type="button" role="switch" aria-checked="false" aria-label="Invert Pixel">
+    <span class="toggle-knob" aria-hidden="true"></span>
+  </button>
+  <span>Invert Pixel</span>
+</div>
 
     <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
@@ -31,7 +33,7 @@
   </div>
 </div>
     <form id="coordinate-form">
-<div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 100px; margin-bottom: 20px; position: relative; top: 440px; right: 150px">
+<div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 100px; margin-bottom: 20px; position: relative; top: 650px; right: 120px">
     <div>
   <input type="text" id="fname" name="fname" placeholder="Right Ascension" aria-label="Right Ascension">
 </div>
@@ -39,13 +41,15 @@
   <input type="text" id="lname" name="lname" placeholder="Declination" aria-label="Declination">
 </div>
 </div>
-<input type="submit" value="Submit" style="display: block; margin: 0 auto; position: relative; top: 380px; left: 280px">     
- <img id="result-image" alt="Astronomy preview" width="500" height="333" draggable="false" style="display: block; margin: 60px auto 0; position: relative; top: -100px; left: -140px">
-  </form>
+<input type="submit" value="Submit" style="display: block; margin: 0 auto; position: relative; top: 550px; left: 280px">     
+ <!--<img id="result-image" alt="Astronomy preview" width="500" height="333" draggable="false" style="display: block; margin: 60px auto 0; position: relative; top: -100px; left: -140px"> -->
+ <img id="result-image" src="image.png" alt="Astronomy preview" width="500" height="500" draggable="false" style="display: block; margin: 60px auto 0; border-color: #ccc; border-width: 19px; border-style: solid; position: relative; top: -100px; left: -120px">
+</form>
 
 <div id="zoom-selection" hidden></div>
 <dialog id="zoom-dialog" aria-label="Zoomed image">
   <button id="zoom-close" type="button" aria-label="Close zoom">×</button>
   <canvas id="zoom-canvas" role="img" aria-label="Zoomed image selection"></canvas>
-</dialog></body>
+</dialog>
+</body>
 </html>
