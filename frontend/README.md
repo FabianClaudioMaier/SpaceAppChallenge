@@ -7,7 +7,7 @@ cd frontend
 ./start.sh
 ```
 
-Die Website ist danach unter <http://127.0.0.1:5173/> erreichbar. Mit `Ctrl+C` beendest du den Server.
+Die Website ist danach unter <http://127.0.0.1:5173/> erreichbar. Mit `Ctrl+C` beendest du den Server. Der lokale Server stellt auch `POST /api/send-to-backend` bereit: Beim Klick auf Submit sendet `app.js` Right Ascension, Declination, Pixel Size und Speed an `sendToBackend` und speichert die zurückgegebene UUID im Browser unter `localStorage.videoUuid`.
 
 Einen anderen Port kannst du so wählen:
 
@@ -15,4 +15,4 @@ Einen anderen Port kannst du so wählen:
 PORT=8080 ./start.sh
 ```
 
-Der Server bindet nur an `127.0.0.1` und ist damit ausschließlich auf deinem Rechner erreichbar. Änderungen an HTML, CSS und JavaScript werden nach dem Neuladen im Browser sichtbar.
+Der Server bindet nur an `127.0.0.1` und ist damit ausschließlich auf deinem Rechner erreichbar. Änderungen an HTML, CSS und JavaScript werden nach dem Neuladen im Browser sichtbar. Falls der Server bereits läuft, starte ihn nach Änderungen an Python-Dateien neu.

@@ -1,4 +1,3 @@
-from PIL import Image
 from datetime import datetime
 from io import BytesIO
 import os
@@ -29,8 +28,9 @@ def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
     DEC: Declination coordinate in degrees
     RA: Right Ascension coordinate in degrees
     PIXELS: Number of pixels to generate
+    MS: Milliseconds to wait between each image in the gif
 
-    Output: uuid of the process, which can be used to retrieve the images from the uuid_cache
+    Output: uuid for this submission
     '''
     uuid = str(uuid4())
 
@@ -74,6 +74,7 @@ def convertToVideo(Images, Timestamps=None, interval=500):
 
     Output: GIF image as bytes.
     """
+    from PIL import Image
 
     if not Images:
         raise ValueError(

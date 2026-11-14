@@ -1,4 +1,4 @@
-# cached SPHEREx/Gaia data and rendered frames (can be hundreds of MB)
+# cached SPHEREx/Gaia downloads (can be hundreds of MB) and per-user output in Cache/usr
 Cache/*
 !Cache/placeholder
 
