@@ -2,7 +2,13 @@
 SPHEREx time-lapse backend - NASA Space Apps 2026 "Planet X and SPHEREx".
 
 main.py = data side (SPHEREx/Gaia -> JPG frames + timestamps).
-gif.py  = turns those frames into the video.
+The middleware makes the GIF from the frames.
+
+How the middleware uses it (see run_request):
+    python main.py <ra> <dec> --uuid <uuid>        (or import main; main.run_request(...))
+    -> work happens in   Cache/.pending_<uuid>/
+    -> when finished it is renamed to   Cache/cache_<uuid>/   (frame_*.jpg, diff_*.jpg, meta.json)
+    meta.json["status"] is "ok" or "error" (then meta.json["error"] says why).
 
 Pipeline behind get_timelapse(ra, dec):
   1. find_exposures      IRSA query: every SPHEREx image that covers (ra, dec)
@@ -30,7 +36,10 @@ import logging
 import math
 import os
 import re
+import shutil
+import sys
 import time
+import uuid as uuidlib
 import urllib.parse
 import warnings
 import xml.etree.ElementTree as ET
@@ -68,10 +77,13 @@ BACKEND_DIR = Path(__file__).resolve().parent
 #     cutouts/<collection>/<obs_id>/D<n>_<coord>_h<half>.npz
 #                                                      raw pixel window of one exposure
 #     timelapses/<collection>/<coord>_fov.._bin.._det.._<data-hash>/
-#         frame_000.jpg ...  diff_000.jpg ...  meta.json  (+ preview.gif from gif.py)
+#         frame_000.jpg ...  diff_000.jpg ...  meta.json
+#     .pending_<uuid>/                                 request still being built
+#     cache_<uuid>/                                    finished request (for the middleware)
 # <data-hash> is computed from the exposure list, so when new SPHEREx data
 # arrives a fresh folder is built automatically and old ones stay valid.
 CACHE_DIR = BACKEND_DIR / "Cache"
+REQUESTS_DIR = CACHE_DIR  # where cache_<uuid>/ folders appear
 QUERY_TTL_S = 24 * 3600
 
 # Used if IRSA can't be asked for the newest "spherex_drN" collection.
@@ -578,11 +590,59 @@ def get_timelapse(ra: float, dec: float, fov_arcmin: float = 4.0, bin_days: floa
 
 
 # --------------------------------------------------------------------------- #
-# CLI for testing without the middleware
+# Middleware handoff: Cache/.pending_<uuid>/  ->  Cache/cache_<uuid>/
 # --------------------------------------------------------------------------- #
-def main() -> None:
+def run_request(target: str, request_id: str | None = None, **options) -> Path:
+    """Build the time-lapse for one middleware request and hand it over as a folder.
+
+    target      "133.79 -7.24" (RA Dec in degrees), sexagesimal, or a name
+    request_id  UUID chosen by the middleware (a new one is made if None)
+    options     passed on to get_timelapse (fov_arcmin, bin_days, detectors, ...)
+
+    Everything is written into Cache/.pending_<uuid>/ first. Only when it is
+    complete is the folder renamed to Cache/cache_<uuid>/ - a rename is a single
+    step, so the middleware can never see a half-written folder. Errors also end
+    up in cache_<uuid>/meta.json (status "error"), so the middleware isn't left
+    waiting forever.
+    """
+    # Parsing as a UUID also guarantees the id can't contain "/" or ".." (path tricks).
+    request_id = str(uuidlib.UUID(str(request_id))) if request_id else str(uuidlib.uuid4())
+    final = REQUESTS_DIR / f"cache_{request_id}"
+    pending = REQUESTS_DIR / f".pending_{request_id}"
+    if final.exists():
+        raise FileExistsError(f"{final} already exists - use a new uuid per request")
+    shutil.rmtree(pending, ignore_errors=True)  # leftover from a crashed earlier run
+    pending.mkdir(parents=True)
+
+    try:
+        ra, dec = resolve_target(target)
+        result = get_timelapse(ra, dec, **options)
+        # The frames live in the shared timelapses/ cache; copy them into this
+        # request's folder and point the paths at where they will be after the rename.
+        for key in ("images", "difference_images"):
+            new_paths = []
+            for src in map(Path, result[key]):
+                shutil.copy2(src, pending / src.name)
+                new_paths.append(str(final / src.name))
+            result[key] = new_paths
+        result.update(status="ok", request_id=request_id, target=target, cache_dir=str(final))
+    except Exception as exc:
+        log.exception("request %s failed", request_id)
+        result = {"status": "error", "request_id": request_id, "target": target,
+                  "error": f"{type(exc).__name__}: {exc}"}
+
+    _write_json(pending / "meta.json", result)
+    os.rename(pending, final)
+    return final
+
+
+# --------------------------------------------------------------------------- #
+# Command line (this is what the middleware runs)
+# --------------------------------------------------------------------------- #
+def main() -> int:
     p = argparse.ArgumentParser(description="SPHEREx time-lapse for a patch of sky")
-    p.add_argument("target", nargs="+", help="name ('R Dra') or coordinates ('133.79 -7.24')")
+    p.add_argument("target", nargs="+", help="coordinates ('133.79 -7.24') or a name ('R Dra')")
+    p.add_argument("--uuid", default=None, help="request id; result goes to Cache/cache_<uuid>/")
     p.add_argument("--fov", type=float, default=4.0, help="field of view in arcmin")
     p.add_argument("--bin-days", type=float, default=10.0)
     p.add_argument("--detectors", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6])
@@ -591,21 +651,22 @@ def main() -> None:
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    ra, dec = resolve_target(" ".join(args.target))
     t0 = time.time()
-    r = get_timelapse(ra, dec, args.fov, args.bin_days, tuple(args.detectors),
-                      args.collection, with_gaia=not args.no_gaia)
-    print(f"\n{len(r['images'])} frames in {time.time() - t0:.1f}s  ->  {r['cache_dir']}")
+    folder = run_request(" ".join(args.target), args.uuid, fov_arcmin=args.fov,
+                         bin_days=args.bin_days, detectors=tuple(args.detectors),
+                         collection=args.collection, with_gaia=not args.no_gaia)
+    r = json.loads((folder / "meta.json").read_text())
+    print(f"\n{r['status']} in {time.time() - t0:.1f}s  ->  {folder}")
+    if r["status"] != "ok":
+        print(r["error"])
+        return 1
     for m in r["frames"]:
         print(f"  {m['date_start']} .. {m['date_end']}  {m['n_exposures']:3d} exposures"
               f"  detectors {m['detectors']}  flags {m['flag_bits_near_target']}")
     print(f"spectrum points: {len(r['spectrum'])}   gaia stars: "
           f"{len(r['gaia']) if r['gaia'] is not None else 'n/a'}")
-
-    from gif import make_gif  # GIF building lives in gif.py
-    gif_path = make_gif(r["images"], r["timestamps"], Path(r["cache_dir"]) / "preview.gif")
-    print(f"preview: {gif_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())  # exit code 0 = ok, 1 = error (handy for the middleware)
