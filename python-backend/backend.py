@@ -38,7 +38,9 @@ Exit codes (the description goes to stderr and into meta.json["error"]):
 
 Pipeline:
     find_exposures       IRSA query: every SPHEREx image that covers (ra, dec)
-    group_into_frames    one frame per SPHEREx pass over the spot (few, deep frames)
+    group_into_passes    group the images by SPHEREx pass over the spot
+    coverage_of          which images cover the whole frame (headers only)
+    plan_frames          split passes into >= MIN_FRAMES frames, same detectors in each
     read_cutout          read only a small square of each image (public AWS copy)
     subtract_background  local sky model per image (removes gradients/bands) + noise
     reproject_cutout     line every square up on one common grid
@@ -76,7 +78,8 @@ from astropy.visualization import AsinhStretch, ImageNormalize
 from astropy.wcs import WCS, FITSFixedWarning
 from astroquery.ipac.irsa import Irsa
 from PIL import Image
-from scipy.ndimage import binary_fill_holes, gaussian_filter, map_coordinates, median_filter
+from scipy.ndimage import (binary_dilation, binary_fill_holes, find_objects, gaussian_filter,
+                           label, map_coordinates, median_filter)
 
 import detectors
 
@@ -92,6 +95,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 #   Cache/
 #     queries/collections.json                    newest SPHEREx release (24h TTL)
 #     queries/<collection>/<coord>.json           image list for a position (24h TTL)
+#     headers/<collection>/<obs_id>/D<n>.json      IMAGE header of one image (any position)
 #     cutouts/<collection>/<obs_id>/D<n>_<coord>_h<half>.npz
 #                                                 downloaded pixel square of one image
 #     usr/.pending_<uuid>/                        job still running
@@ -107,11 +111,13 @@ COLLECTION_RE = re.compile(r"^spherex_dr(\d+)$")
 PIXEL_SCALE_ARCSEC = 6.15
 MIN_PIXELS, MAX_PIXELS = 3, 2040  # 2040 = width of one SPHEREx detector
 
-# One frame per SPHEREx pass over the spot (like Backyard Worlds' epochs): few,
-# deep frames instead of many noisy ones a few days apart.
-EPOCH_GAP_DAYS = 30.0   # a gap longer than this between images starts a new frame
-EPOCH_MAX_DAYS = 60.0   # a frame never spans longer (spots near the ecliptic
+# Images are grouped by SPHEREx pass over the spot (like Backyard Worlds' epochs):
+EPOCH_GAP_DAYS = 30.0   # a gap longer than this between images starts a new pass
+EPOCH_MAX_DAYS = 60.0   # a pass never spans longer (spots near the ecliptic
                         # poles are seen almost continuously)
+# ... and passes are split into several frames until the video has at least
+# this many (as far as the data allows, see plan_frames).
+MIN_FRAMES = 6
 
 # Sky level is estimated per tile of this many pixels (~3.3') and smoothed, so
 # large-scale gradients and stray-light bands are removed but stars are kept.
@@ -315,21 +321,129 @@ def find_exposures(ra: float, dec: float, collection: str) -> list[Exposure]:
 # --------------------------------------------------------------------------- #
 # 2. SPHEREx passes -> video frames
 # --------------------------------------------------------------------------- #
-def group_into_frames(exposures: list[Exposure]) -> list[list[Exposure]]:
-    """One frame per SPHEREx pass over the spot.
+def group_into_passes(exposures: list[Exposure]) -> list[list[Exposure]]:
+    """Group the images by SPHEREx pass over the spot.
 
     SPHEREx sees a given spot for a few days to weeks every ~6 months. A new
-    frame starts after a gap of more than EPOCH_GAP_DAYS, or once the frame
-    would span more than EPOCH_MAX_DAYS -> typically 2-3 deep frames per year.
+    pass starts after a gap of more than EPOCH_GAP_DAYS, or once the pass
+    would span more than EPOCH_MAX_DAYS -> typically 2-3 passes per year.
     """
-    frames: list[list[Exposure]] = []
+    passes: list[list[Exposure]] = []
     for e in sorted(exposures, key=lambda e: e.mjd):
-        if (frames and e.mjd - frames[-1][-1].mjd <= EPOCH_GAP_DAYS
-                and e.mjd - frames[-1][0].mjd <= EPOCH_MAX_DAYS):
-            frames[-1].append(e)
+        if (passes and e.mjd - passes[-1][-1].mjd <= EPOCH_GAP_DAYS
+                and e.mjd - passes[-1][0].mjd <= EPOCH_MAX_DAYS):
+            passes[-1].append(e)
         else:
-            frames.append([e])
-    return frames
+            passes.append([e])
+    return passes
+
+
+# An image "fully covers" the frame when at least this fraction of the test
+# points spread over the frame lies on its detector (see frame_coverage).
+FULL_COVERAGE = 0.999
+
+
+def frame_test_points(ra: float, dec: float, pixels: int) -> tuple[np.ndarray, np.ndarray]:
+    """Sky positions of a 7x7 grid of points spread over the whole output frame (corners included)."""
+    t = np.linspace(-0.5, pixels - 0.5, 7)
+    gx, gy = np.meshgrid(t, t)
+    return make_grid_wcs(ra, dec, pixels).pixel_to_world_values(gx, gy)
+
+
+def frame_coverage(hdr: fits.Header, test_ra: np.ndarray, test_dec: np.ndarray) -> float:
+    """Fraction of the frame's test points that land on this image's detector."""
+    x, y = WCS(hdr).world_to_pixel_values(test_ra, test_dec)
+    nx, ny = hdr["NAXIS1"], hdr["NAXIS2"]
+    return float(np.mean((x >= -0.5) & (x <= nx - 0.5) & (y >= -0.5) & (y <= ny - 0.5)))
+
+
+def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int,
+                collection: str) -> dict[tuple[str, int], float | None]:
+    """How much of the frame each image covers (None = header not available).
+
+    Only the headers are needed (cached per image, see image_header), fetched
+    in parallel - much cheaper than downloading pixels that turn out unusable.
+    """
+    test_ra, test_dec = frame_test_points(ra, dec, pixels)
+
+    def one(e: Exposure) -> float | None:
+        try:
+            return frame_coverage(image_header(e, collection)[0], test_ra, test_dec)
+        except Exception as exc:
+            log.warning("no header for %s D%d: %s", e.obs_id, e.detector, exc)
+            return None
+
+    with ThreadPoolExecutor(DOWNLOAD_THREADS) as pool:
+        return {(e.obs_id, e.detector): c for e, c in zip(exposures, pool.map(one, exposures))}
+
+
+def plan_frames(passes: list[list[Exposure]], min_frames: int = MIN_FRAMES,
+                coverage: dict[tuple[str, int], float | None] | None = None) -> list[list[Exposure]]:
+    """Turn the passes into at least min_frames frames (as far as the data allows).
+
+    A pass is split into k frames *per detector, in time order*: each
+    detector's images are cut into k consecutive parts, and frame j gets part
+    j of every detector. So every frame of a pass has the same wavelength mix
+    (no colour jumps), the frames stay in time order, and each detector keeps
+    >= MIN_IMAGES_PER_DETECTOR images per frame (glitch removal keeps working).
+    Splits go to the pass with the most images per frame first. A detector
+    with too few images for k parts is left out of that pass, as long as both
+    colour channels stay represented. Bonus: frames days apart within one pass
+    show fast movers such as asteroids moving.
+
+    With `coverage` (see coverage_of), each detector uses only its images that
+    cover the whole frame, if there are enough of them for its k parts;
+    otherwise all its images (partly-covering images leave edges where a
+    detector has only 1-2 images - detectors.weighted_mean copes with that).
+    -> list of frames (each a list of images, at most MAX_IMAGES_PER_FRAME via
+       detectors.pick), in time order; passes without enough images are dropped.
+    """
+    m = detectors.MIN_IMAGES_PER_DETECTOR
+
+    def covers_frame(e: Exposure) -> bool:
+        return coverage is not None and (coverage.get((e.obs_id, e.detector)) or 0.0) >= FULL_COVERAGE
+
+    def channels(by_det: dict) -> set[str]:
+        return {c for c, dets in detectors.CHANNELS.items() if any(d in by_det for d in dets)}
+
+    def images_for(imgs: list[Exposure], k: int) -> list[Exposure] | None:
+        """A detector's images for k frames: the fully-covering ones if they suffice, else all."""
+        full = [e for e in imgs if covers_frame(e)]
+        if len(full) >= m * k:
+            return full
+        return imgs if len(imgs) >= m * k else None
+
+    def usable(by_det: dict, k: int) -> dict | None:
+        """Detectors that can give >= m images to each of k frames, if both colours survive."""
+        keep = {d: sel for d, imgs in by_det.items() if (sel := images_for(imgs, k))}
+        return keep if keep and channels(keep) == channels(by_det) else None
+
+    per_pass = []
+    for p in passes:
+        by_det: dict[int, list[Exposure]] = {}
+        for e in sorted(p, key=lambda e: e.mjd):
+            by_det.setdefault(e.detector, []).append(e)
+        per_pass.append({d: imgs for d, imgs in by_det.items() if len(imgs) >= m})
+
+    splits = [1 if by_det else 0 for by_det in per_pass]
+    while sum(splits) < min_frames:
+        candidates = [i for i, by_det in enumerate(per_pass)
+                      if splits[i] and usable(by_det, splits[i] + 1)]
+        if not candidates:
+            break  # the data doesn't allow more frames
+        richest = max(candidates, key=lambda i: sum(map(len, per_pass[i].values())) / splits[i])
+        splits[richest] += 1
+
+    frames = []
+    for by_det, k in zip(per_pass, splits):
+        if not k:
+            continue
+        keep = usable(by_det, k)
+        for j in range(k):
+            part = [e for imgs in keep.values()
+                    for e in imgs[j * len(imgs) // k:(j + 1) * len(imgs) // k]]
+            frames.append(detectors.pick(part))
+    return [f for f in frames if f]
 
 
 # --------------------------------------------------------------------------- #
@@ -445,8 +559,8 @@ def _data_bytes(hdr: fits.Header) -> int:
     return math.ceil(n / FITS_BLOCK) * FITS_BLOCK
 
 
-def _read_square_ranges(url: str, ra: float, dec: float, half: int):
-    """Fast path: IMAGE header + exactly the rows of the square. See _read_square_fits for the result."""
+def _fetch_image_header(url: str) -> tuple[fits.Header, int]:
+    """IMAGE header + the byte offset where its data starts, from the file's first bytes."""
     buf = _http_range(url, 0, HEADER_PROBE_BYTES - 1)
     primary = _parse_header(buf, 0)
     image = primary and _parse_header(buf, primary[1] + _data_bytes(primary[0]))
@@ -455,6 +569,42 @@ def _read_square_ranges(url: str, ra: float, dec: float, half: int):
     hdr, data_offset = image
     if hdr.get("BITPIX") != -32 or hdr.get("NAXIS") != 2:
         raise DownloadError(f"unexpected IMAGE format BITPIX={hdr.get('BITPIX')} NAXIS={hdr.get('NAXIS')}")
+    return hdr, data_offset
+
+
+def image_header(exp: Exposure, collection: str, fetch: bool = True) -> tuple[fits.Header, int] | None:
+    """IMAGE header of one exposure + its data offset, cached in Cache/headers/.
+
+    A header doesn't depend on the position looked at, so once fetched it is
+    reused for every request (and saves that request when downloading pixels).
+    fetch=False: only look in the cache (None if not there).
+    """
+    path = CACHE_DIR / "headers" / collection / exp.obs_id / f"D{exp.detector}.json"
+    cached = _read_json(path)
+    if cached is not None:
+        return fits.Header.fromstring(cached["header"]), cached["data_offset"]
+    if not fetch:
+        return None
+    errors = []
+    for url in (exp.s3_url, exp.url):  # AWS first, IRSA as fallback
+        try:
+            hdr, data_offset = _fetch_image_header(url)
+            break
+        except Exception as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+    else:
+        raise DownloadError(f"{exp.obs_id} D{exp.detector} header: {' | '.join(errors)}")
+    _write_json(path, {"header": hdr.tostring(), "data_offset": data_offset})
+    return hdr, data_offset
+
+
+def _read_square_ranges(url: str, ra: float, dec: float, half: int,
+                        header: tuple[fits.Header, int] | None = None):
+    """Fast path: IMAGE header (or the cached one) + exactly the rows of the square.
+
+    See _read_square_fits for the result.
+    """
+    hdr, data_offset = header if header is not None else _fetch_image_header(url)
 
     xc, yc, x0, x1, y0, y1, nx, ny = _square_bounds(hdr, ra, dec, half)
     if x1 - x0 < 3 or y1 - y0 < 3:
@@ -493,9 +643,12 @@ def _square_bounds(hdr: fits.Header, ra: float, dec: float, half: int):
     return xc, yc, x0, x1, y0, y1, nx, ny
 
 
-def _read_cutout_remote(url: str, exp: Exposure, ra: float, dec: float, half: int) -> Cutout | None:
-    reader = _read_square_fits if USE_FLAGS else _read_square_ranges
-    hdr, data, flags, (xc, yc, x0, y0, nx, ny) = reader(url, ra, dec, half)
+def _read_cutout_remote(url: str, exp: Exposure, ra: float, dec: float, half: int,
+                        header: tuple[fits.Header, int] | None = None) -> Cutout | None:
+    if USE_FLAGS:
+        hdr, data, flags, (xc, yc, x0, y0, nx, ny) = _read_square_fits(url, ra, dec, half)
+    else:
+        hdr, data, flags, (xc, yc, x0, y0, nx, ny) = _read_square_ranges(url, ra, dec, half, header)
     if data is None:
         return None  # the square doesn't overlap this detector
 
@@ -527,10 +680,11 @@ def read_cutout(exp: Exposure, ra: float, dec: float, half: int, collection: str
         return Cutout(exp, z["data"], meta["x0"], meta["y0"], meta["header"],
                       meta["flags_near_target"])
 
+    header = None if USE_FLAGS else image_header(exp, collection, fetch=False)  # saves a request
     errors = []
     for url in (exp.s3_url, exp.url):  # AWS first, IRSA as fallback
         try:
-            cut = _read_cutout_remote(url, exp, ra, dec, half)
+            cut = _read_cutout_remote(url, exp, ra, dec, half, header)
             break
         except Exception as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
@@ -636,17 +790,37 @@ def subtract_background(data: np.ndarray) -> tuple[np.ndarray, float]:
 # --------------------------------------------------------------------------- #
 # 5. Rendering (same brightness scale for every frame, or blinking is useless)
 # --------------------------------------------------------------------------- #
-def enclosed_holes(valid: np.ndarray) -> np.ndarray:
-    """"No data" pixels completely surrounded by image.
+# A "no data" gap counts as a saturated star centre (-> white) when the pixels
+# around it are at least this bright on the 0..1 display scale.
+SATURATED_SURROUNDING = 0.6
 
-    Very bright stars saturate the detector and SPHEREx sets their centre to NaN,
-    which would show as a black hole inside a bright ring. After stacking, a
-    pixel is only NaN if it had no data in *every* image of the frame - inside
-    the image that practically means saturated, i.e. "brighter than measurable"
-    -> drawn white. NaN touching the frame edge (area not covered by any image)
-    is not a hole and is drawn black.
+
+def fill_holes(img01: np.ndarray) -> np.ndarray:
+    """Fill "no data" (NaN) gaps that are completely surrounded by image (0..1 scale).
+
+    - surrounded by bright pixels: a saturated star centre (SPHEREx sets those
+      to NaN) -> white, i.e. "brighter than measurable", not a black hole
+    - otherwise: a small gap between image edges in dark sky -> the median of
+      the pixels around it, so it doesn't show as a dot
+    NaN touching the frame edge (area not covered by any image) is left alone
+    and drawn black later.
     """
-    return binary_fill_holes(valid) & ~valid
+    valid = np.isfinite(img01)
+    holes = binary_fill_holes(valid) & ~valid
+    if not holes.any():
+        return img01
+    out = img01.copy()
+    labels, _ = label(holes)
+    for k, (ys, xs) in enumerate(find_objects(labels), start=1):
+        # one pixel more on each side, so the ring around the gap is included
+        ys = slice(max(ys.start - 1, 0), ys.stop + 1)
+        xs = slice(max(xs.start - 1, 0), xs.stop + 1)
+        gap = labels[ys, xs] == k
+        ring = binary_dilation(gap) & valid[ys, xs]
+        around = img01[ys, xs][ring]
+        level = float(np.median(around)) if around.size else 0.0
+        out[ys, xs][gap] = 1.0 if level >= SATURATED_SURROUNDING else level
+    return out
 
 
 def _shared_stretch(images: list[np.ndarray | None]) -> ImageNormalize:
@@ -675,22 +849,18 @@ def render_frames(frames: list[dict], out_dir: Path) -> list[str]:
     stretch = {c: _shared_stretch([f[c] for f in frames]) for c in ("blue", "red", "all")}
     names = []
     for i, f in enumerate(frames):
-        holes = enclosed_holes(np.isfinite(f["all"]))
         if COLOR_FRAMES and (f["blue"] is not None or f["red"] is not None):
             def channel(name):
                 if f[name] is None:
                     return None
-                c = np.asarray(stretch[name](f[name]), float)
-                # a star can saturate in one channel only: white there too, not black
-                c[enclosed_holes(np.isfinite(c))] = 1.0
-                return c
+                # per channel: a star can saturate in one channel only
+                return fill_holes(np.asarray(stretch[name](f[name]), float))
             blue, red = channel("blue"), channel("red")
             blue = red if blue is None else blue
             red = blue if red is None else red
             img01 = np.stack([red, (red + blue) / 2, blue], axis=-1)
         else:
-            img01 = np.asarray(stretch["all"](f["all"]), float)
-        img01[holes] = 1.0              # saturated star centres: white
+            img01 = fill_holes(np.asarray(stretch["all"](f["all"]), float))
         img01 = np.nan_to_num(img01, nan=0.0)  # not covered by any image: black
         name = f"frame_{i:03d}.jpg"
         _save_jpg(img01, out_dir / name)
@@ -850,11 +1020,16 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
         raise BackendError(EXIT_NO_DATA, f"no {collection} images cover RA={ra:.5f} Dec={dec:+.5f}")
 
     half = math.ceil(pixels / 2 * math.sqrt(2)) + 2  # covers the grid at any rotation
-    groups = group_into_frames(exposures)
-    time_bins = [b for b in (detectors.pick(g) for g in groups) if b]
-    bins_skipped = len(groups) - len(time_bins)  # too few images per detector to remove glitches
+    passes = group_into_passes(exposures)
+    coverage = coverage_of(exposures, ra, dec, pixels, collection)
+    n_full = sum(1 for c in coverage.values() if c is not None and c >= FULL_COVERAGE)
+    log.info("%d of %d images cover the whole frame", n_full, len(exposures))
+    time_bins = plan_frames(passes, coverage=coverage)
+    # passes skipped: too few images per detector to remove glitches
+    bins_skipped = sum(1 for p in passes if not detectors.pick(p))
     if not time_bins:  # nothing has enough images: better a glitchy video than none
-        time_bins, bins_skipped = [detectors.pick(g, min_per_detector=1) for g in groups], 0
+        time_bins = [b for b in (detectors.pick(p, min_per_detector=1) for p in passes) if b]
+        bins_skipped = 0
 
     job = (ra, dec, half, collection, pixels)
     # How many images may be queued ahead (their lined-up results wait in RAM).
