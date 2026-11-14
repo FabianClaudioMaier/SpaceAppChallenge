@@ -60,38 +60,40 @@
         </label>
       </div>
 
-      <section class="celestial-globe-panel" aria-labelledby="globe-heading">
-        <h1 id="globe-heading">Celestial pointing</h1>
-        <canvas
-          id="coordinate-globe"
-          width="560"
-          height="360"
-          role="img"
-          aria-label="Time-dependent Earth projection on a celestial sphere, with coordinate lines and the selected sky direction"
-        ></canvas>
-        <p class="globe-legend">Blue: celestial equator · Red: selected sky direction</p>
-        <p class="globe-disclaimer">
-          Approximate Earth projection: the marker shows where you’d stand to see the selected RA/Dec directly overhead at the current time.
-        </p>
-        <p class="earth-texture-credit">
-          Earth texture:
-          <a
-            href="https://github.com/mrdoob/three.js/tree/dev/examples/textures/planets"
-            target="_blank"
-            rel="noopener noreferrer"
-          >Three.js planet textures</a>
-        </p>
-        <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
-      </section>
+      <div class="visualization-row">
+        <img
+          id="result-image"
+          alt="Astronomy preview"
+          width="500"
+          height="333"
+          draggable="false"
+        />
+        <section class="celestial-globe-panel" aria-labelledby="globe-heading">
+          <h1 id="globe-heading">Celestial pointing</h1>
+          <canvas
+            id="coordinate-globe"
+            width="560"
+            height="360"
+            role="img"
+            aria-label="Time-dependent Earth projection on a celestial sphere, with coordinate lines and the selected sky direction"
+          ></canvas>
+          <p class="globe-legend">Blue: celestial equator · Red: selected sky direction</p>
+          <p class="globe-disclaimer">
+            Approximate Earth projection: the marker shows where you’d stand to see the selected RA/Dec directly overhead at the current time.
+          </p>
+          <p class="earth-texture-credit">
+            Earth texture:
+            <a
+              href="https://github.com/mrdoob/three.js/tree/dev/examples/textures/planets"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Three.js planet textures</a>
+          </p>
+          <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
+        </section>
+      </div>
 
       <input type="submit" value="Submit" />
-      <img
-        id="result-image"
-        alt="Astronomy preview"
-        width="500"
-        height="333"
-        draggable="false"
-      />
     </form>
 
 <div id="zoom-selection" hidden></div>
