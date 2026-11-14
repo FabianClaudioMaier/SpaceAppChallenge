@@ -20,7 +20,7 @@ let activeVideoPoll = 0;
 
 async function displayVideo(uuid) {
   const poll = ++activeVideoPoll;
-  const videoUrl = `/api/videos/${encodeURIComponent(uuid)}.gif`;
+  const videoUrl = `/frontend/video_cache/${encodeURIComponent(uuid)}.gif`;
 
   while (poll === activeVideoPoll) {
     try {
