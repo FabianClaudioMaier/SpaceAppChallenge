@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from uuid import uuid4
+import shutil
 
 
 def main(DEC, RA, PIXELS, interval):
@@ -21,6 +22,7 @@ def main(DEC, RA, PIXELS, interval):
     uuid = sendToBackend(DEC, RA, PIXELS)
     Images = getImages(uuid)
     Video = convertToVideo(Images, interval)
+    shutil.rmtree(f"../python-backend/Cache/usr/{uuid}")  # Remove the uuid folder after collecting the images
     video_id = sendToFrontend(Video, uuid)
     return video_id
 
@@ -66,8 +68,6 @@ def getImages(uuid):
     for filename in os.listdir(PATH):
         if filename.endswith(".jpg"):
             Images.append(f"{PATH}/{filename}")
-
-    os.rmdir(PATH)  # Remove the uuid folder after collecting the images
     return Images
 
 
