@@ -226,6 +226,8 @@ input[type="submit"] {
 }
 
 .globe-legend,
+.globe-disclaimer,
+.earth-texture-credit,
 #globe-status {
   margin: 4px 0;
   font-size: 13px;
@@ -234,6 +236,18 @@ input[type="submit"] {
 
 .globe-legend {
   color: #aebfe0;
+}
+
+.globe-disclaimer {
+  color: #dce8ff;
+}
+
+.earth-texture-credit {
+  color: #9eb4d8;
+}
+
+.earth-texture-credit a {
+  color: #9fc5ff;
 }
 
 #globe-status {

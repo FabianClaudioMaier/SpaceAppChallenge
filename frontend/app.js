@@ -24,6 +24,49 @@ let globeTarget = null;
 let globeYaw = -0.48;
 let globePitch = 0.32;
 let globeDrag = null;
+let earthTexture = null;
+let earthTextureError = null;
+const earthTextureImage = new Image();
+earthTextureImage.crossOrigin = "anonymous";
+earthTextureImage.addEventListener("load", () => {
+  const textureCanvas = document.createElement("canvas");
+  textureCanvas.width = earthTextureImage.naturalWidth;
+  textureCanvas.height = earthTextureImage.naturalHeight;
+  const textureContext = textureCanvas.getContext("2d", { willReadFrequently: true });
+
+  if (!textureContext) {
+    earthTextureError = new Error("Could not create an Earth texture canvas");
+    console.error(earthTextureError);
+    globeStatus.textContent = earthTextureError.message;
+    return;
+  }
+
+  try {
+    textureContext.drawImage(earthTextureImage, 0, 0);
+    earthTexture = {
+      width: textureCanvas.width,
+      height: textureCanvas.height,
+      pixels: textureContext.getImageData(
+        0,
+        0,
+        textureCanvas.width,
+        textureCanvas.height
+      ).data,
+    };
+    earthTextureError = null;
+    drawCelestialGlobe();
+  } catch (error) {
+    earthTextureError = error;
+    console.error("Could not read the remote Earth texture:", error);
+    globeStatus.textContent = "The Earth texture could not be read; check the network connection.";
+  }
+}, { once: true });
+earthTextureImage.addEventListener("error", () => {
+  earthTextureError = new Error("The remote Earth texture failed to load");
+  console.error(earthTextureError);
+  globeStatus.textContent = "The Earth texture could not be loaded; check the network connection.";
+}, { once: true });
+earthTextureImage.src = "https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg";
 
 function parseBackendAngle(rawValue, coordinate) {
   const value = rawValue.trim();
@@ -91,6 +134,17 @@ function coordinateVector(raDegrees, decDegrees) {
     y: Math.sin(dec),
     z: Math.cos(dec) * Math.sin(ra),
   };
+}
+
+function greenwichMeanSiderealDegrees(date) {
+  const julianDate = date.getTime() / 86400000 + 2440587.5;
+  const centuries = (julianDate - 2451545) / 36525;
+  const degrees =
+    280.46061837 +
+    360.98564736629 * (julianDate - 2451545) +
+    0.000387933 * centuries ** 2 -
+    centuries ** 3 / 38710000;
+  return ((degrees % 360) + 360) % 360;
 }
 
 function drawCelestialGlobe() {
@@ -162,21 +216,105 @@ function drawCelestialGlobe() {
     context.fillText(label, point.x + offsetX, point.y + offsetY);
   }
 
+  function drawEarthSurface() {
+    const resolution = Math.max(2, Math.round(radius * 2));
+    const surfaceCanvas = document.createElement("canvas");
+    surfaceCanvas.width = resolution;
+    surfaceCanvas.height = resolution;
+    const surfaceContext = surfaceCanvas.getContext("2d");
+    if (!surfaceContext) return;
+
+    const surfaceImage = surfaceContext.createImageData(resolution, resolution);
+    const gmstDegrees = greenwichMeanSiderealDegrees(new Date());
+    const textureWidth = earthTexture.width;
+    const textureHeight = earthTexture.height;
+    const sourcePixels = earthTexture.pixels;
+    const targetPixels = surfaceImage.data;
+    const halfResolution = resolution / 2;
+
+    for (let y = 0; y < resolution; y += 1) {
+      const cameraY = -(y + 0.5 - halfResolution) / halfResolution;
+      for (let x = 0; x < resolution; x += 1) {
+        const cameraX = (x + 0.5 - halfResolution) / halfResolution;
+        const depthSquared = 1 - cameraX * cameraX - cameraY * cameraY;
+        if (depthSquared <= 0) continue;
+
+        const cameraZ = Math.sqrt(depthSquared);
+        const rotatedY = pitchCos * cameraY + pitchSin * cameraZ;
+        const rotatedZ = -pitchSin * cameraY + pitchCos * cameraZ;
+        const worldX = yawCos * cameraX - yawSin * rotatedZ;
+        const worldZ = yawSin * cameraX + yawCos * rotatedZ;
+        const latitude = Math.asin(
+          Math.max(-1, Math.min(1, rotatedY))
+        ) * 180 / Math.PI;
+        const rightAscension = ((Math.atan2(worldZ, worldX) * 180 / Math.PI) + 360) % 360;
+        let longitude = rightAscension - gmstDegrees;
+        longitude = ((longitude + 180) % 360 + 360) % 360 - 180;
+
+        const longitudeU = (longitude + 180) / 360;
+        const textureU = (1 - longitudeU) % 1;
+        const textureX = Math.floor(textureU * textureWidth);
+        const textureY = Math.min(
+          textureHeight - 1,
+          Math.floor(((90 - latitude) / 180) * textureHeight)
+        );
+        const sourceOffset = (textureY * textureWidth + textureX) * 4;
+        const targetOffset = (y * resolution + x) * 4;
+        targetPixels[targetOffset] = sourcePixels[sourceOffset];
+        targetPixels[targetOffset + 1] = sourcePixels[sourceOffset + 1];
+        targetPixels[targetOffset + 2] = sourcePixels[sourceOffset + 2];
+        targetPixels[targetOffset + 3] = 238;
+      }
+    }
+
+    surfaceContext.putImageData(surfaceImage, 0, 0);
+    context.drawImage(
+      surfaceCanvas,
+      centerX - radius,
+      centerY - radius,
+      radius * 2,
+      radius * 2
+    );
+
+    context.save();
+    context.beginPath();
+    context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    context.clip();
+    const shade = context.createRadialGradient(
+      centerX - radius * 0.35,
+      centerY - radius * 0.38,
+      radius * 0.08,
+      centerX,
+      centerY,
+      radius
+    );
+    shade.addColorStop(0, "rgba(255, 255, 255, 0.08)");
+    shade.addColorStop(0.7, "rgba(0, 0, 0, 0)");
+    shade.addColorStop(1, "rgba(0, 5, 20, 0.48)");
+    context.fillStyle = shade;
+    context.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
+    context.restore();
+  }
+
   context.clearRect(0, 0, width, height);
-  const sphereFill = context.createRadialGradient(
-    centerX - radius * 0.32,
-    centerY - radius * 0.38,
-    radius * 0.04,
-    centerX,
-    centerY,
-    radius
-  );
-  sphereFill.addColorStop(0, "rgba(90, 145, 210, 0.12)");
-  sphereFill.addColorStop(1, "rgba(20, 45, 85, 0.05)");
-  context.beginPath();
-  context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-  context.fillStyle = sphereFill;
-  context.fill();
+  if (earthTexture) {
+    drawEarthSurface();
+  } else {
+    const sphereFill = context.createRadialGradient(
+      centerX - radius * 0.32,
+      centerY - radius * 0.38,
+      radius * 0.04,
+      centerX,
+      centerY,
+      radius
+    );
+    sphereFill.addColorStop(0, "rgba(90, 145, 210, 0.12)");
+    sphereFill.addColorStop(1, "rgba(20, 45, 85, 0.05)");
+    context.beginPath();
+    context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    context.fillStyle = sphereFill;
+    context.fill();
+  }
 
   for (let dec = -75; dec <= 75; dec += 15) {
     if (dec === 0) continue;
@@ -201,18 +339,6 @@ function drawCelestialGlobe() {
   }
   drawCurve(equator, "rgba(108, 169, 255, 0.95)", "rgba(108, 169, 255, 0.4)", 1.7);
 
-  const obliquity = (23.43928 * Math.PI) / 180;
-  const ecliptic = [];
-  for (let longitude = 0; longitude <= 360; longitude += 4) {
-    const angle = (longitude * Math.PI) / 180;
-    ecliptic.push(project({
-      x: Math.cos(angle),
-      y: Math.sin(angle) * Math.cos(obliquity),
-      z: Math.sin(angle) * Math.sin(obliquity),
-    }));
-  }
-  drawCurve(ecliptic, "rgba(255, 199, 110, 0.92)", "rgba(255, 199, 110, 0.4)", 1.4);
-
   context.beginPath();
   context.arc(centerX, centerY, radius, 0, Math.PI * 2);
   context.strokeStyle = "rgba(190, 214, 255, 0.8)";
@@ -221,11 +347,14 @@ function drawCelestialGlobe() {
 
   drawPoint({ x: 0, y: 1, z: 0 }, "NCP", "#a9c8ff", 6, -5);
   drawPoint({ x: 0, y: -1, z: 0 }, "SCP", "#a9c8ff", 6, 14);
-  drawPoint(coordinateVector(0, 0), "VE · 0h", "#ffc76e", -54, -8);
-  drawPoint(coordinateVector(180, 0), "AE · 12h", "#ffc76e", 8, 16);
 
   if (globeTarget) {
-    const endpoint = project(globeTarget.vector);
+    const surfacePoint = project(globeTarget.vector);
+    const endpoint = project({
+      x: globeTarget.vector.x * 1.08,
+      y: globeTarget.vector.y * 1.08,
+      z: globeTarget.vector.z * 1.08,
+    });
     const deltaX = endpoint.x - centerX;
     const deltaY = endpoint.y - centerY;
     const length = Math.hypot(deltaX, deltaY);
@@ -233,7 +362,7 @@ function drawCelestialGlobe() {
     context.beginPath();
     context.moveTo(centerX, centerY);
     context.lineTo(endpoint.x, endpoint.y);
-    context.strokeStyle = "#53e6f4";
+    context.strokeStyle = "#ff4d5a";
     context.lineWidth = 2.5;
     context.setLineDash([]);
     context.stroke();
@@ -254,17 +383,17 @@ function drawCelestialGlobe() {
         endpoint.y - unitY * headLength - unitX * headWidth
       );
       context.closePath();
-      context.fillStyle = "#53e6f4";
+      context.fillStyle = "#ff4d5a";
       context.fill();
     }
 
     context.beginPath();
-    context.arc(endpoint.x, endpoint.y, 5, 0, Math.PI * 2);
-    context.fillStyle = "#53e6f4";
+    context.arc(surfacePoint.x, surfacePoint.y, 4, 0, Math.PI * 2);
+    context.fillStyle = "#ff4d5a";
     context.fill();
     context.beginPath();
-    context.arc(endpoint.x, endpoint.y, 9, 0, Math.PI * 2);
-    context.strokeStyle = "rgba(83, 230, 244, 0.7)";
+    context.arc(endpoint.x, endpoint.y, 7, 0, Math.PI * 2);
+    context.strokeStyle = "rgba(255, 77, 90, 0.9)";
     context.lineWidth = 1.2;
     context.stroke();
   }
@@ -278,6 +407,9 @@ function updateCelestialTarget(raDegrees, decDegrees) {
   };
   globeStatus.textContent =
     `Target: RA ${raDegrees.toFixed(4)}°, Dec ${decDegrees.toFixed(4)}°. ` +
+    (earthTextureError
+      ? "Earth texture unavailable; check the network. "
+      : "") +
     "Drag the sphere to rotate it.";
   drawCelestialGlobe();
 }
@@ -296,6 +428,7 @@ coordinateGlobe.addEventListener("pointermove", (event) => {
   );
   globeDrag = { x: event.clientX, y: event.clientY };
   drawCelestialGlobe();
+  setInterval(drawCelestialGlobe, 10000);
 });
 
 coordinateGlobe.addEventListener("pointerup", () => {

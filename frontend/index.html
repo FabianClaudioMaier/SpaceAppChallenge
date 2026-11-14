@@ -65,9 +65,20 @@
           width="560"
           height="360"
           role="img"
-          aria-label="Transparent celestial sphere with equator, ecliptic, equinoxes, and selected direction"
+          aria-label="Time-dependent Earth projection on a celestial sphere, with coordinate lines and the selected sky direction"
         ></canvas>
-        <p class="globe-legend">Blue: celestial equator · Gold: ecliptic and equinoxes · Cyan: target</p>
+        <p class="globe-legend">Blue: celestial equator · Red: selected sky direction</p>
+        <p class="globe-disclaimer">
+          Approximate Earth projection; RA/Dec marks a sky direction, not a place on Earth.
+        </p>
+        <p class="earth-texture-credit">
+          Earth texture:
+          <a
+            href="https://github.com/mrdoob/three.js/tree/dev/examples/textures/planets"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Three.js planet textures</a>
+        </p>
         <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
       </section>
 
