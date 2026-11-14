@@ -54,19 +54,29 @@ def select(exposures: list, detectors: tuple[int, ...] = ALL_DETECTORS) -> list:
 MAX_IMAGES_PER_FRAME = 18
 
 
-def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME) -> list:
+# A detector needs at least this many images in a frame: the median of 3 throws
+# out glitch pixels (cosmic-ray hits etc.) that appear in only one image. With
+# 1-2 images a glitch survives as a white dot that is only in that one frame.
+MIN_IMAGES_PER_DETECTOR = 3
+
+
+def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME,
+         min_per_detector: int = MIN_IMAGES_PER_DETECTOR) -> list:
     """Choose at most max_images of one time bin, fairly spread over detectors and time.
 
+    0. only detectors with >= min_per_detector images in this bin are used;
+       if no detector has that many, the bin gets no images (-> no frame)
     1. hand out the slots round-robin: one per detector, then a second each, ...
        (a detector with fewer images than its share just gets all of them)
     2. inside each detector take images evenly spaced in time
     Always picks the same images for the same input, so the cutout cache is reused.
     """
-    if len(exposures) <= max_images:
-        return list(exposures)
     by_det: dict[int, list] = {}
     for e in sorted(exposures, key=lambda e: e.mjd):
         by_det.setdefault(e.detector, []).append(e)
+    by_det = {d: items for d, items in by_det.items() if len(items) >= min_per_detector}
+    if sum(map(len, by_det.values())) <= max_images:
+        return sorted((e for items in by_det.values() for e in items), key=lambda e: (e.mjd, e.detector))
 
     quota = dict.fromkeys(by_det, 0)
     left = max_images
@@ -86,31 +96,36 @@ def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME) -> list:
 def combine(images_by_detector: dict[int, list[np.ndarray]]) -> np.ndarray:
     """Squash all images of one time bin into one picture.
 
-    1. per detector: median of its images (throws out cosmic-ray hits) when
-       there are 3 or more, otherwise the mean
+    1. per detector: robust median of its images (throws out glitch pixels,
+       see robust_median_stack)
     2. average the detectors together
     NaN pixels (bad or not covered) are ignored.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN pixels are fine
-        per_detector = [nanmedian_stack(imgs) if len(imgs) >= 3 else np.nanmean(imgs, axis=0)
-                        for imgs in images_by_detector.values()]
+        per_detector = [robust_median_stack(imgs) for imgs in images_by_detector.values()]
         return np.nanmean(per_detector, axis=0)
 
 
-def nanmedian_stack(images: list[np.ndarray]) -> np.ndarray:
-    """Pixel-wise median of a few images, ignoring NaN - same result as np.nanmedian.
+def robust_median_stack(images: list[np.ndarray]) -> np.ndarray:
+    """Pixel-wise median of a few images, ignoring NaN.
 
-    np.nanmedian falls back to a very slow per-pixel loop when there are NaNs
-    (28 of 38 s for 2000x2000 frames). Instead: sort each pixel's values in one
-    go (NaNs end up last), count the valid ones, take the middle one (or the
-    average of the two middle ones).
+    Same as np.nanmedian, except where a pixel has exactly 2 valid values: then
+    the smaller one is taken instead of their average. Glitches are always too
+    bright, so the smaller value is the clean one (happens e.g. at a detector's
+    edge, where not all images cover the pixel).
+
+    Faster than np.nanmedian, which falls back to a slow per-pixel loop when
+    there are NaNs (28 of 38 s for 2000x2000 frames). Instead: sort each pixel's
+    values in one go (NaNs end up last), count the valid ones, take the middle.
     """
     stack = np.sort(np.asarray(images), axis=0)
     n_valid = np.isfinite(stack).sum(axis=0)
     last = stack.shape[0] - 1
-    lo = np.clip((n_valid - 1) // 2, 0, last)[None]  # n odd: lo == hi
-    hi = np.clip(n_valid // 2, 0, last)[None]
+    lo = np.clip((n_valid - 1) // 2, 0, last)  # n odd: lo == hi
+    hi = np.clip(n_valid // 2, 0, last)
+    hi = np.where(n_valid == 2, lo, hi)[None]  # 2 values: smaller one only
+    lo = lo[None]
     median = (np.take_along_axis(stack, lo, axis=0)[0] + np.take_along_axis(stack, hi, axis=0)[0]) / 2
     median[n_valid == 0] = np.nan
     return median
