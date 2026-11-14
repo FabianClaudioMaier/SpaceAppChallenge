@@ -207,3 +207,105 @@ color: white;}
   font-size: 24px;
   cursor: pointer;
 }
+
+.coordinate-form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: min(760px, calc(100% - 32px));
+  margin: 110px auto 48px;
+}
+
+.coordinate-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  width: min(100%, 620px);
+  font-family: "DM Sans", sans-serif;
+}
+
+.coordinate-fields label {
+  display: grid;
+  gap: 7px;
+  color: #dce8ff;
+}
+
+.coordinate-fields input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #55709e;
+  border-radius: 8px;
+  background: #081b3a;
+  color: white;
+  font: inherit;
+}
+
+.coordinate-fields span {
+  color: #9eb4d8;
+  font-size: 13px;
+}
+
+.celestial-globe-panel {
+  width: min(100%, 560px);
+  color: #dce8ff;
+  text-align: center;
+  font-family: "DM Sans", sans-serif;
+}
+
+.celestial-globe-panel h1 {
+  margin: 0 0 8px;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 24px;
+}
+
+#coordinate-globe {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+#coordinate-globe:active {
+  cursor: grabbing;
+}
+
+.globe-legend,
+#globe-status {
+  margin: 4px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.globe-legend {
+  color: #aebfe0;
+}
+
+#globe-status {
+  min-height: 20px;
+  color: #e4edff;
+}
+
+#result-image {
+  display: block;
+  width: min(100%, 500px);
+  height: auto;
+  margin: 4px auto;
+}
+
+@media (max-width: 560px) {
+  .coordinate-form {
+    margin-top: 100px;
+  }
+
+  .coordinate-fields {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .settings {
+    right: 16px;
+  }
+}

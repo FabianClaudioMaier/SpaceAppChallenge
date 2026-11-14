@@ -32,19 +32,56 @@
 <p id="zoom-info">ⓘ Click or select window to zoom</p>
   </div>
 </div>
-    <form id="coordinate-form">
-<div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 100px; margin-bottom: 20px; position: relative; top: 650px; right: 120px">
-    <div>
-  <input type="text" id="fname" name="fname" placeholder="Right Ascension" aria-label="Right Ascension">
-</div>
-<div>
-  <input type="text" id="lname" name="lname" placeholder="Declination" aria-label="Declination">
-</div>
-</div>
-<input type="submit" value="Submit" style="display: block; margin: 0 auto; position: relative; top: 550px; left: 280px">     
- <!--<img id="result-image" alt="Astronomy preview" width="500" height="333" draggable="false" style="display: block; margin: 60px auto 0; position: relative; top: -100px; left: -140px"> -->
- <img id="result-image" src="image.png" alt="Astronomy preview" width="500" height="500" draggable="false" style="display: block; margin: 60px auto 0; border-color: #ccc; border-width: 19px; border-style: solid; position: relative; top: -100px; left: -120px">
-</form>
+    <form id="coordinate-form" class="coordinate-form">
+      <div class="coordinate-fields">
+        <label for="fname">
+          Right Ascension
+          <input
+            type="text"
+            id="fname"
+            name="fname"
+            placeholder="133.79° or 08:55:10.8"
+            autocomplete="off"
+            required
+          />
+          <span>Degrees or hours (h:m:s)</span>
+        </label>
+        <label for="lname">
+          Declination
+          <input
+            type="text"
+            id="lname"
+            name="lname"
+            placeholder="-7.245° or -07:14:42"
+            autocomplete="off"
+            required
+          />
+          <span>Degrees (decimal or d:m:s)</span>
+        </label>
+      </div>
+
+      <section class="celestial-globe-panel" aria-labelledby="globe-heading">
+        <h1 id="globe-heading">Celestial pointing</h1>
+        <canvas
+          id="coordinate-globe"
+          width="560"
+          height="360"
+          role="img"
+          aria-label="Transparent celestial sphere with equator, ecliptic, equinoxes, and selected direction"
+        ></canvas>
+        <p class="globe-legend">Blue: celestial equator · Gold: ecliptic and equinoxes · Cyan: target</p>
+        <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
+      </section>
+
+      <input type="submit" value="Submit" />
+      <img
+        id="result-image"
+        alt="Astronomy preview"
+        width="500"
+        height="333"
+        draggable="false"
+      />
+    </form>
 
 <div id="zoom-selection" hidden></div>
 <dialog id="zoom-dialog" aria-label="Zoomed image">

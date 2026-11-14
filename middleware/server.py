@@ -10,7 +10,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from middleware import main
+import traceback
+
+from middleware import BackendError, main
 
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
@@ -88,8 +90,24 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("Pixel Size or Speed is outside its allowed range")
 
             uuid = main(DEC, RA, PIXELS, MS)
+        except BackendError as error:
+            # The backend's own explanation, e.g. "DEC must be in [-90, 90] degrees, got 91"
+            status = {
+                1: HTTPStatus.BAD_REQUEST,   # invalid coordinates / input
+                2: HTTPStatus.NOT_FOUND,     # no SPHEREx images cover that position
+                3: HTTPStatus.BAD_GATEWAY,   # NASA archive unreachable
+            }.get(error.exit_code, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.send_json(status, {"error": str(error)})
+            return
         except (KeyError, TypeError, ValueError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+        except Exception as error:
+            # Anything unexpected: answer anyway, so the page shows a message
+            # instead of "Failed to fetch"
+            traceback.print_exc()
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR,
+                           {"error": f"Internal error: {type(error).__name__}: {error}"})
             return
 
         self.send_json(HTTPStatus.OK, {"uuid": uuid})
