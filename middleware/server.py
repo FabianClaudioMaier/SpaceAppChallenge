@@ -49,6 +49,7 @@ class Handler(SimpleHTTPRequestHandler):
         video_path = VIDEO_CACHE_DIR / name
         try:
             with video_path.open("rb") as video:
+                os.utime(video.fileno(), None)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/gif")
                 self.send_header("Content-Length", str(os.fstat(video.fileno()).st_size))

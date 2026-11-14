@@ -2,7 +2,7 @@ import time
 import os
 from pathlib import Path
 
-VIDEO_CACHE_DIR = "video_cache"
+VIDEO_CACHE_DIR = Path(__file__).resolve().parent / "video_cache"
 
 def clean_cache(CACHE_FOLDER=VIDEO_CACHE_DIR, MAX_AGE=30 * 60):
 
