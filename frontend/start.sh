@@ -3,12 +3,15 @@ set -euo pipefail
 
 FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIDDLEWARE_DIR="$FRONTEND_DIR/../middleware"
+BACKEND_DIR="$FRONTEND_DIR/../python-backend"
+"$BACKEND_DIR/setup_venv.sh"
+PY="$BACKEND_DIR/.venv/bin/python"
 PORT="${PORT:-5173}"
 
 echo "Frontend und Middleware laufen unter http://127.0.0.1:${PORT}/"
-python3 "$MIDDLEWARE_DIR/clean_cache.py" &
+"$PY" "$MIDDLEWARE_DIR/clean_cache.py" &
 clean_cache_pid=$!
-python3 "$MIDDLEWARE_DIR/server.py" "$PORT" &
+"$PY" "$MIDDLEWARE_DIR/server.py" "$PORT" &
 server_pid=$!
 
 cleanup() {
