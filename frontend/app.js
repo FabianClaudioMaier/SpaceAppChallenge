@@ -8,7 +8,8 @@ const pixelSizeInput = document.querySelector("#pixel-size");
 const pixelSizeValue = document.querySelector("#pixel-size-value");
 const zoomSelection = document.querySelector("#zoom-selection");
 const zoomDialog = document.querySelector("#zoom-dialog");
-const zoomCanvas = document.querySelector("#zoom-canvas");
+const zoomView = document.querySelector("#zoom-view");
+const zoomImage = document.querySelector("#zoom-image");
 const zoomClose = document.querySelector("#zoom-close");
 const coordinateForm = document.querySelector("#coordinate-form");
 const rightAscensionInput = document.querySelector("#fname");
@@ -634,33 +635,25 @@ function clamp(value, min, max) {
 }
 
 function openZoom(region, imageRect) {
-  const scaleX = image.naturalWidth / imageRect.width;
-  const scaleY = image.naturalHeight / imageRect.height;
-  const sourceX = (region.left - imageRect.left) * scaleX;
-  const sourceY = (region.top - imageRect.top) * scaleY;
-  const sourceWidth = region.width * scaleX;
-  const sourceHeight = region.height * scaleY;
-
-  zoomCanvas.width = Math.max(1, Math.round(sourceWidth));
-  zoomCanvas.height = Math.max(1, Math.round(sourceHeight));
-
-  const context = zoomCanvas.getContext("2d");
-  context.drawImage(
-    image,
-    sourceX, sourceY, sourceWidth, sourceHeight,
-    0, 0, zoomCanvas.width, zoomCanvas.height
-  );
+  // The image area inside the 4px border
+  const left = imageRect.left + image.clientLeft;
+  const top = imageRect.top + image.clientTop;
+  const width = image.clientWidth;
+  const height = image.clientHeight;
 
   const availableWidth = Math.min(window.innerWidth - 32, 1000);
   const availableHeight = Math.min(window.innerHeight - 64, 800);
-  const displayScale = Math.min(
-    availableWidth / zoomCanvas.width,
-    availableHeight / zoomCanvas.height
-  );
+  const scale = Math.min(availableWidth / region.width, availableHeight / region.height);
 
-  zoomCanvas.style.width = `${Math.round(zoomCanvas.width * displayScale)}px`;
-  zoomCanvas.style.height = `${Math.round(zoomCanvas.height * displayScale)}px`;
-  zoomCanvas.style.filter = image.style.filter;
+  zoomView.style.width = `${Math.round(region.width * scale)}px`;
+  zoomView.style.height = `${Math.round(region.height * scale)}px`;
+
+  zoomImage.src = image.currentSrc || image.src;
+  zoomImage.style.width = `${width * scale}px`;
+  zoomImage.style.height = `${height * scale}px`;
+  zoomImage.style.left = `${(left - region.left) * scale}px`;
+  zoomImage.style.top = `${(top - region.top) * scale}px`;
+  zoomImage.style.filter = image.style.filter;
   zoomDialog.showModal();
 }
 

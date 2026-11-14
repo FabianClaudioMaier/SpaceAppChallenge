@@ -475,6 +475,23 @@ class DownloadError(Exception):
 HEADER_PROBE_BYTES = 64 * 1024  # first bytes of the file: PRIMARY + IMAGE header (~29 KB)
 FITS_BLOCK = 2880
 
+# Whole rows are 2040 px wide, so for a small square most of that request is
+# thrown away (200 px frame: ~7x more than needed). Instead, only the square's
+# part of each row can be asked for - one byte range per row, many ranges per
+# request. AWS S3 doesn't support several ranges in one request (it sends the
+# whole file), IRSA does. Measured at IRSA: 100 ranges per request work; 200 got
+# the connection reset; 300-400 were answered with the whole 65 MB file; 600 were
+# refused (header too long). Hence MULTIRANGE_ROWS rows per request, with margin.
+# Used when it downloads at least MULTIRANGE_MIN_SAVING x less than whole rows;
+# otherwise (or if it fails) whole rows from AWS as before.
+MULTIRANGE_ROWS = 80
+MULTIRANGE_MIN_SAVING = 2.0
+# After this many failed multi-range downloads in one run, stop trying them
+# (IRSA down or refusing): each failure costs retries before the AWS fallback.
+MULTIRANGE_MAX_FAILURES = 5
+_multirange_failures = 0
+_multirange_lock = threading.Lock()
+
 # Stuck connections: when 32 downloads share a line, some lose packets and TCP
 # makes them wait longer and longer (measured: 1 image took 24 s while the
 # median was 6 s). Instead of waiting, abort and retry on a fresh connection:
@@ -509,33 +526,103 @@ def _too_slow_below() -> float:
 
 def _http_range(url: str, start: int, end: int) -> bytes:
     """Download bytes start..end (inclusive) of url, retrying stuck/failed attempts."""
-    want = end - start + 1
+    return _http_get(url, f"bytes={start}-{end}", want=end - start + 1)[0]
+
+
+def _http_get(url: str, range_spec: str, want: int | None = None,
+              judge_speed: bool = True) -> tuple[bytes, dict[str, str]]:
+    """GET with a Range header -> (body, response headers), retrying stuck/failed attempts.
+
+    Only a 206 answer is accepted. Anything else (e.g. 200 = the whole 65 MB file,
+    which servers send when they don't like the Range) is aborted before its
+    body is downloaded. want: expected body size, if known.
+    judge_speed=False: don't abort for being slow (requests that are mostly
+    waiting time, see _http_multirange) - a stalled connection still is.
+    """
     errors = []
     for attempt in range(1, HTTP_ATTEMPTS + 1):
         t0 = time.monotonic()
         try:
-            with _session().get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True,
+            with _session().get(url, headers={"Range": range_spec}, stream=True,
                                 timeout=(HTTP_CONNECT_TIMEOUT_S, HTTP_STALL_TIMEOUT_S)) as r:
                 if r.status_code != 206:  # 206 = "here is the part you asked for"
                     raise DownloadError(f"HTTP {r.status_code} (expected 206)")
+                headers = dict(r.headers)
                 buf = bytearray()
                 for chunk in r.iter_content(64 * 1024):
                     buf += chunk
                     elapsed = time.monotonic() - t0
                     # (the limit is re-read each time: early downloads start before
                     # anything has finished, so "typical speed" isn't known yet)
-                    if (attempt < HTTP_ATTEMPTS and elapsed > HTTP_SLOW_AFTER_S
+                    if (judge_speed and attempt < HTTP_ATTEMPTS and elapsed > HTTP_SLOW_AFTER_S
                             and len(buf) / elapsed < _too_slow_below()):
                         raise DownloadError(f"too slow ({len(buf) / elapsed / 1000:.0f} kB/s)")
-            if len(buf) != want:
+            if want is not None and len(buf) != want:
                 raise DownloadError(f"got {len(buf)} of {want} bytes")
-            if want >= 256 * 1024:  # small requests are mostly waiting time, not speed
+            if judge_speed and len(buf) >= 256 * 1024:  # small requests are mostly waiting time
                 with _speeds_lock:
-                    _recent_speeds.append(want / max(time.monotonic() - t0, 1e-3))
-            return bytes(buf)
+                    _recent_speeds.append(len(buf) / max(time.monotonic() - t0, 1e-3))
+            return bytes(buf), headers
         except (requests.RequestException, DownloadError) as exc:
             errors.append(f"try {attempt}: {type(exc).__name__}: {exc}")
     raise DownloadError("; ".join(errors))
+
+
+_CONTENT_RANGE_RE = re.compile(rb"content-range:[ \t]*bytes[ \t]+(\d+)-(\d+)/", re.IGNORECASE)
+
+
+def _http_multirange(url: str, ranges: list[tuple[int, int]]) -> list[bytes]:
+    """Several byte ranges (start, end inclusive) of url in ONE request -> their bytes, same order.
+
+    The server answers with "multipart/byteranges": the parts one after the
+    other, each with a small header saying which bytes it holds. IRSA does
+    this, AWS S3 doesn't (see MULTIRANGE_ROWS). The server may also merge
+    neighbouring ranges into one part, so each range is looked up by position.
+    """
+    body, headers = _http_get(url, "bytes=" + ",".join(f"{s}-{e}" for s, e in ranges),
+                              judge_speed=False)
+    parts = _split_byteranges(body, headers)
+    out = []
+    for s, e in ranges:
+        for start, data in parts:
+            if start <= s and e < start + len(data):
+                out.append(data[s - start:e - start + 1])
+                break
+        else:
+            raise DownloadError(f"bytes {s}-{e} missing from the multipart answer")
+    return out
+
+
+def _split_byteranges(body: bytes, headers: dict[str, str]) -> list[tuple[int, bytes]]:
+    """Body of a 206 answer -> [(first byte position, bytes), ...] of its parts."""
+    ctype = headers.get("Content-Type", "")
+    if not ctype.lower().startswith("multipart/byteranges"):
+        # one part only (a single range, or the server merged them all)
+        m = _CONTENT_RANGE_RE.match(b"content-range: " + headers.get("Content-Range", "").encode())
+        if not m:
+            raise DownloadError(f"206 answer without Content-Range ({ctype!r})")
+        return [(int(m[1]), body)]
+    boundary = ctype.split("boundary=", 1)[1].split(";")[0].strip().strip('"')
+    delimiter = b"--" + boundary.encode()
+    parts, pos = [], 0
+    while True:
+        pos = body.find(delimiter, pos)
+        if pos < 0:
+            raise DownloadError("multipart answer ends early")
+        pos += len(delimiter)
+        if body.startswith(b"--", pos):  # closing delimiter
+            return parts
+        head_end = body.find(b"\r\n\r\n", pos)
+        m = _CONTENT_RANGE_RE.search(body, pos, head_end) if head_end >= 0 else None
+        if m is None:
+            raise DownloadError("multipart part without Content-Range")
+        start, end = int(m[1]), int(m[2])
+        data_start = head_end + 4
+        data = body[data_start:data_start + end - start + 1]
+        if len(data) != end - start + 1:
+            raise DownloadError(f"multipart part {start}-{end} is cut off")
+        parts.append((start, data))
+        pos = data_start + len(data)  # jump over the data: it may contain anything
 
 
 def _parse_header(buf: bytes, offset: int) -> tuple[fits.Header, int] | None:
@@ -599,9 +686,12 @@ def image_header(exp: Exposure, collection: str, fetch: bool = True) -> tuple[fi
 
 
 def _read_square_ranges(url: str, ra: float, dec: float, half: int,
-                        header: tuple[fits.Header, int] | None = None):
-    """Fast path: IMAGE header (or the cached one) + exactly the rows of the square.
+                        header: tuple[fits.Header, int] | None = None, multirange: bool = False):
+    """Fast path: IMAGE header (or the cached one) + the rows of the square.
 
+    multirange=False: the square's rows in full (1 request, needs only single ranges).
+    multirange=True: only the square's columns of each row, MULTIRANGE_ROWS rows
+    per request (the server must support multipart/byteranges, i.e. IRSA).
     See _read_square_fits for the result.
     """
     hdr, data_offset = header if header is not None else _fetch_image_header(url)
@@ -610,8 +700,15 @@ def _read_square_ranges(url: str, ra: float, dec: float, half: int,
     if x1 - x0 < 3 or y1 - y0 < 3:
         return hdr, None, None, (xc, yc, x0, y0, nx, ny)  # square doesn't overlap this detector
     row_bytes = nx * 4
-    raw = _http_range(url, data_offset + y0 * row_bytes, data_offset + y1 * row_bytes - 1)
-    data = np.frombuffer(raw, dtype=">f4").reshape(y1 - y0, nx)[:, x0:x1].astype(np.float32)
+    if multirange:
+        rows = [(data_offset + y * row_bytes + x0 * 4, data_offset + y * row_bytes + x1 * 4 - 1)
+                for y in range(y0, y1)]
+        raw = b"".join(part for i in range(0, len(rows), MULTIRANGE_ROWS)
+                       for part in _http_multirange(url, rows[i:i + MULTIRANGE_ROWS]))
+        data = np.frombuffer(raw, dtype=">f4").reshape(y1 - y0, x1 - x0).astype(np.float32)
+    else:
+        raw = _http_range(url, data_offset + y0 * row_bytes, data_offset + y1 * row_bytes - 1)
+        data = np.frombuffer(raw, dtype=">f4").reshape(y1 - y0, nx)[:, x0:x1].astype(np.float32)
     if hdr.get("BSCALE", 1) != 1 or hdr.get("BZERO", 0) != 0:
         data = data * np.float32(hdr.get("BSCALE", 1)) + np.float32(hdr.get("BZERO", 0))
     return hdr, data, None, (xc, yc, x0, y0, nx, ny)
@@ -644,11 +741,13 @@ def _square_bounds(hdr: fits.Header, ra: float, dec: float, half: int):
 
 
 def _read_cutout_remote(url: str, exp: Exposure, ra: float, dec: float, half: int,
-                        header: tuple[fits.Header, int] | None = None) -> Cutout | None:
+                        header: tuple[fits.Header, int] | None = None,
+                        multirange: bool = False) -> Cutout | None:
     if USE_FLAGS:
         hdr, data, flags, (xc, yc, x0, y0, nx, ny) = _read_square_fits(url, ra, dec, half)
     else:
-        hdr, data, flags, (xc, yc, x0, y0, nx, ny) = _read_square_ranges(url, ra, dec, half, header)
+        hdr, data, flags, (xc, yc, x0, y0, nx, ny) = _read_square_ranges(
+            url, ra, dec, half, header, multirange)
     if data is None:
         return None  # the square doesn't overlap this detector
 
@@ -680,14 +779,27 @@ def read_cutout(exp: Exposure, ra: float, dec: float, half: int, collection: str
         return Cutout(exp, z["data"], meta["x0"], meta["y0"], meta["header"],
                       meta["flags_near_target"])
 
+    global _multirange_failures
     header = None if USE_FLAGS else image_header(exp, collection, fetch=False)  # saves a request
+    # Small square: only its columns, from IRSA (see MULTIRANGE_ROWS). Then, or
+    # otherwise: whole rows, AWS first, IRSA as fallback.
+    attempts = [(exp.s3_url, False), (exp.url, False)]
+    if (not USE_FLAGS and (2 * half + 1) * MULTIRANGE_MIN_SAVING <= MAX_PIXELS
+            and _multirange_failures < MULTIRANGE_MAX_FAILURES):
+        attempts.insert(0, (exp.url, True))
     errors = []
-    for url in (exp.s3_url, exp.url):  # AWS first, IRSA as fallback
+    for url, multirange in attempts:
         try:
-            cut = _read_cutout_remote(url, exp, ra, dec, half, header)
+            cut = _read_cutout_remote(url, exp, ra, dec, half, header, multirange)
             break
         except Exception as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
+            if multirange:
+                with _multirange_lock:
+                    _multirange_failures += 1
+                    if _multirange_failures == MULTIRANGE_MAX_FAILURES:
+                        log.warning("multi-range downloads keep failing (%s), "
+                                    "using whole rows from now on", exc)
     else:
         raise DownloadError(f"{exp.obs_id} D{exp.detector}: {' | '.join(errors)}")  # not cached
 
