@@ -69,7 +69,7 @@ earthTextureImage.addEventListener("error", () => {
   console.error(earthTextureError);
   globeStatus.textContent = "The Earth texture could not be loaded; check the network connection.";
 }, { once: true });
-earthTextureImage.src = "./earth_texture.jpg";
+earthTextureImage.src = "./earth.jpg";
 
 function parseBackendAngle(rawValue, coordinate) {
   const value = rawValue.trim();
