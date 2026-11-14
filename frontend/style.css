@@ -1,5 +1,18 @@
 body {
-  background-color: lightblue;
+  min-height: 100vh;
+  background-color: #050b1b;
+  background-image:
+    radial-gradient(1px 1px at 17px 31px, white 98%, transparent),
+    radial-gradient(2px 2px at 113px 87px, #c7dcff 98%, transparent),
+    radial-gradient(1px 1px at 59px 162px, white 98%, transparent),
+    radial-gradient(1px 1px at 219px 43px, white 98%, transparent),
+    radial-gradient(2px 2px at 71px 242px, #c7dcff 98%, transparent);
+  background-size:
+    137px 193px,
+    211px 157px,
+    173px 229px,
+    251px 181px,
+    193px 271px;
 }
 
 h1 {
@@ -19,4 +32,96 @@ input[type="submit"] {
   font-family: "DM Sans", sans-serif;
   background-color: #4c4ab7;
   color: #16241d;
+}#fname {
+  transform: translateY(10px) scale(1.25);
+}#lname {
+  transform: translateY(10px) scale(1.25);
+}.settings {
+  position: fixed;
+  top: 16px;
+  right: 100px;
+  width: 260px;
+  z-index: 100;
+  font-family: "DM Sans", sans-serif;
+}
+
+#settings-button {
+  display: block;
+  margin-left: auto;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.settings-panel {
+  margin-top: 8px;
+  padding: 16px;
+  color: white;
+  background: #081b3a;
+  border: 1px solid #55709e;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px #0008;
+}
+
+.settings-panel[hidden] {
+  display: none;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.settings-panel button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#invert-pixel[aria-pressed="true"] {
+  background: #6ca9ff;
+}
+
+.settings-panel label {
+  display: flex;
+  justify-content: space-between;
+}
+
+#speed {
+  width: 100%;
+  margin: 10px 0 18px;
+}#zoom-button[aria-pressed="true"] {
+  background: #6ca9ff;
+}
+
+#zoom-info {
+  padding: 8px;
+  margin: 10px 0 0;
+  border-radius: 8px;
+  background: #15305a;
+  font-size: 14px;
+}
+
+#zoom-info[hidden] {
+  display: none;
+}
+
+.zoom-ready {
+  cursor: zoom-in;
+  transform-origin: top left;
+  user-select: none;
+  touch-action: none;
+  z-index: 1;
+}
+
+.zoom-ready.zoomed {
+  cursor: grab;
+}
+
+.zoom-ready.dragging {
+  cursor: grabbing;
 }

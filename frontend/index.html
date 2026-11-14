@@ -13,17 +13,32 @@
     <link rel="stylesheet" href="style.css" />
     <script src="app.js" defer></script>
   </head>
-  <body>
+  <body><div class="settings">
+  <button id="settings-button" type="button" aria-controls="settings-panel" aria-expanded="false">⚙ Settings</button>
+
+  <div id="settings-panel" class="settings-panel" hidden>
+    <div class="setting-row">
+      <button id="invert-pixel" type="button" aria-pressed="false">Aus</button>
+      <span>Invert Pixel</span>
+    </div>
+
+    <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
+    <input id="speed" type="range" min="25" max="1000" step="1" value="250">
+
+    <button id="zoom-button" type="button" aria-pressed="false">Zoom</button>
+<p id="zoom-info" hidden>ⓘ Click to zoom. Drag the image to move around.</p>
+  </div>
+</div>
     <form action="/action_page.php">
-<div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 180px; margin-bottom: 20px; position: relative; top: 25px;">
+<div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 100px; margin-bottom: 20px; position: relative; top: 440px; right: 150px">
     <div>
   <input type="text" id="fname" name="fname" placeholder="Right Ascension" aria-label="Right Ascension">
 </div>
-  <div>
-    <label for="lname">Declination:</label><br>
-    <input type="text" id="lname" name="lname">
-  </div>
+<div>
+  <input type="text" id="lname" name="lname" placeholder="Declination" aria-label="Declination">
 </div>
-<input type="submit" value="Submit" style="display: block; margin: 0 auto; position: relative; top: 25px;">      <img src="image.png" alt="Trulli" width="500" height="333" style="display: block; margin: 60px auto 0;">
+</div>
+<input type="submit" value="Submit" style="display: block; margin: 0 auto; position: relative; top: 380px; left: 280px">     
+ <img src="image.png" alt="Trulli" width="500" height="333" draggable="false" style="display: block; margin: 60px auto 0; position: relative; top: -100px; left: -140px">
   </body>
 </html>
