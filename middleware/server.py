@@ -1,7 +1,6 @@
 """Serve the frontend and expose the local middleware API on one origin."""
 
 import json
-import math
 import os
 import shutil
 import sys
@@ -78,13 +77,13 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ValueError("Invalid request size")
 
             payload = json.loads(self.rfile.read(length))
-            DEC = float(payload["DEC"])
-            RA = float(payload["RA"])
+            DEC = payload["DEC"]
+            RA = payload["RA"]
             PIXELS = int(payload["PIXELS"])
             MS = int(payload["MS"])
 
-            if not math.isfinite(DEC) or not math.isfinite(RA):
-                raise ValueError("Coordinates must be finite numbers")
+            if not isinstance(DEC, str) or not isinstance(RA, str):
+                raise ValueError("Coordinates must be strings")
             if not 50 <= PIXELS <= 500 or not 25 <= MS <= 1000:
                 raise ValueError("Pixel Size or Speed is outside its allowed range")
 

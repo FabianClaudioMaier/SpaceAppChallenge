@@ -2,6 +2,7 @@ from datetime import datetime
 from io import BytesIO
 import os
 import subprocess
+import sys
 import time
 from uuid import uuid4
 
@@ -11,8 +12,8 @@ def main(DEC, RA, PIXELS, interval):
     Main function to run the middleware.
 
     Parameters:
-    DEC: Declination coordinate in degrees
-    RA: Right Ascension coordinate in degrees
+    DEC: Declination coordinate string for the backend to parse
+    RA: Right Ascension coordinate string for the backend to parse
     PIXELS: Number of pixels to generate
     interval: Duration in milliseconds for each frame in the GIF
     '''
@@ -27,20 +28,22 @@ def main(DEC, RA, PIXELS, interval):
 def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
     '''
     Creates a uuid.
-    Starts the backend process in a shell script with the given DEC and RA coordinates, PIXELS, and uuid. 
+    Starts the backend process with the given DEC and RA coordinates, PIXELS, and uuid.
     The backend process will generate images based on these coordinates. 
 
     Parameters:
-    DEC: Declination coordinate in degrees
-    RA: Right Ascension coordinate in degrees
+    DEC: Declination coordinate string
+    RA: Right Ascension coordinate string
     PIXELS: Number of pixels to generate
 
     Output: uuid for this submission
     '''
     uuid = str(uuid4())
 
-    shell_command = f"python3 {BACKEND_PATH} {DEC} {RA} {PIXELS} {uuid}"
-    subprocess.run(shell_command, shell=True, check=True)
+    subprocess.run(
+        [sys.executable, BACKEND_PATH, DEC, RA, str(PIXELS), uuid],
+        check=True,
+    )
     return uuid
 
 

@@ -57,25 +57,6 @@ declinationInput.addEventListener("input", () => {
   localStorage.setItem("declination", declinationInput.value);
 });
 
-function parseCoordinate(value) {
-  const text = value.trim();
-  if (!text) return NaN;
-
-  const decimal = Number(text);
-  if (Number.isFinite(decimal)) return decimal;
-
-  const match = /^([+-]?)(\d+)d(\d+)m(\d+(?:\.\d+)?)s$/i.exec(text);
-  if (!match) return NaN;
-
-  const degrees = Number(match[2]);
-  const minutes = Number(match[3]);
-  const seconds = Number(match[4]);
-  if (minutes >= 60 || seconds >= 60) return NaN;
-
-  const sign = match[1] === "-" ? -1 : 1;
-  return sign * (degrees + minutes / 60 + seconds / 3600);
-}
-
 async function requestVideoUuid(DEC, RA, PIXELS, MS) {
   const response = await fetch("/api/send-to-backend", {
     method: "POST",
@@ -96,20 +77,11 @@ async function requestVideoUuid(DEC, RA, PIXELS, MS) {
 coordinateForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  const raText = rightAscensionInput.value.trim();
-  const decText = declinationInput.value.trim();
-  const RA = parseCoordinate(raText);
-  const DEC = parseCoordinate(decText);
-  if (!raText || !decText || !Number.isFinite(RA) || !Number.isFinite(DEC)) {
-    alert("Enter decimal degrees or values like 04d41m36.1139s for Right Ascension and Declination.");
-    return;
-  }
-
   submitButton.disabled = true;
   try {
     const uuid = await requestVideoUuid(
-      DEC,
-      RA,
+      declinationInput.value,
+      rightAscensionInput.value,
       Number(pixelSizeInput.value),
       Number(speedInput.value)
     );
