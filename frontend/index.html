@@ -42,11 +42,11 @@
      <span>Pin arrow while rotating</span>
    </div>
 
-    <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
-    <input id="speed" type="range" min="25" max="1000" step="1" value="250">
+    <label for="speed">Speed <output id="speed-value" for="speed">500 ms</output></label>
+    <input id="speed" type="range" min="25" max="1000" step="1" value="500">
 
-        <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">255 px</output></label>
-<input id="pixel-size" type="range" min="50" max="500" step="1" value="255">
+        <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">250 px</output></label>
+<input id="pixel-size" type="range" min="50" max="500" step="1" value="250">
 <button id="apply-settings" type="submit" form="coordinate-form">Apply</button>
   </div>
 </div>
@@ -79,13 +79,19 @@
       </div>
 
       <div class="visualization-row">
-        <img
-          id="result-image"
-          alt="Astronomy preview"
-          width="500"
-          height="333"
-          draggable="false"
-        />
+        <div class="result-frame">
+          <img
+            id="result-image"
+            alt="Astronomy preview"
+            width="500"
+            height="333"
+            draggable="false"
+          />
+          <div id="throbber" class="throbber" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="throbber-text" role="status">Working…</span>
+          </div>
+        </div>
         <section class="celestial-globe-panel" aria-labelledby="globe-heading">
           <h1 id="globe-heading">Celestial pointing</h1>
           <canvas
@@ -112,7 +118,7 @@
         </section>
       </div>
 
-      <input type="submit" value="Submit" />
+      <button id="submit-button" type="submit">Submit</button>
     </form>
 
 <div id="zoom-selection" hidden></div>

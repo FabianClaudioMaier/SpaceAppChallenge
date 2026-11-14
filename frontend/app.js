@@ -18,7 +18,9 @@ const applyGlobeCoordinatesButton = document.querySelector("#apply-globe-coordin
 const coordinateForm = document.querySelector("#coordinate-form");
 const rightAscensionInput = document.querySelector("#fname");
 const declinationInput = document.querySelector("#lname");
-const submitButton = coordinateForm.querySelector('input[type="submit"]');
+const submitButton = document.querySelector("#submit-button");
+const throbber = document.querySelector("#throbber");
+const throbberText = document.querySelector("#throbber-text");
 const applySettingsButton = document.querySelector("#apply-settings");
 let appliedPixelSize = Number(pixelSizeInput.value);
 let appliedSpeed = Number(speedInput.value);
@@ -771,7 +773,7 @@ coordinateForm.addEventListener("submit", async (event) => {
       "The original coordinates will still be sent to the backend for validation.";
   }
 
-  submitButton.disabled = true;
+  setLoading(true);
   try {
     const uuid = await requestVideoUuid(
       declinationInput.value,
@@ -781,6 +783,7 @@ coordinateForm.addEventListener("submit", async (event) => {
     );
     stopVideoHeartbeat();
     currentVideoUuid = uuid;
+    loadingUuid = uuid; // the throbber stays until this job's GIF has loaded
     localStorage.setItem("videoUuid", uuid);
     image.removeAttribute("src");
     image.alt = "Astronomy preview while the video is created";
@@ -795,11 +798,40 @@ coordinateForm.addEventListener("submit", async (event) => {
     if (!previewWasUpdated) {
       globeStatus.textContent = `Submission failed: ${error.message}`;
     }
+    setLoading(false);
     alert(`Submission failed: ${error.message}`);
-  } finally {
-    submitButton.disabled = false;
   }
 });
+
+// Throbber over the GIF (and Submit greyed out), from submitting until the
+// new GIF is on screen (the request itself only returns when the backend is done).
+let loadingTimer = null;
+let loadingUuid = null;
+
+function setLoading(on) {
+  clearInterval(loadingTimer);
+  loadingTimer = null;
+  if (!on) loadingUuid = null;
+  throbber.hidden = !on;
+  image.parentElement.classList.toggle("loading", on);
+  submitButton.disabled = on; // greyed out while a job runs (see style.css)
+  if (on) {
+    const started = Date.now();
+    throbberText.textContent = "Working… 0 s";
+    loadingTimer = setInterval(() => {
+      throbberText.textContent = `Working… ${Math.floor((Date.now() - started) / 1000)} s`;
+    }, 1000);
+  }
+}
+
+function stopLoadingIfDone() {
+  // Only when this job's GIF has arrived (e.g. not when "Show diffs" swaps
+  // the previous result's GIF meanwhile)
+  if (loadingUuid && image.src.includes(loadingUuid)) setLoading(false);
+}
+
+image.addEventListener("load", stopLoadingIfDone);
+image.addEventListener("error", stopLoadingIfDone);
 
 settingsButton.addEventListener("click", () => {
   const open = settingsPanel.hidden;

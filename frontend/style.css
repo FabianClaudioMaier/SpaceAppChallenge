@@ -16,7 +16,7 @@ p {
   font-size: 20px;
 }
 
-input[type="submit"] {left: var(--submit-offset);
+#submit-button {left: var(--submit-offset);
   border-radius: 12px;
   padding: 12px 28px;
   font-size: 20px;
@@ -337,16 +337,66 @@ color: white;}
   color: #e4edff;
 }
 
-#result-image {
-  display: block;
+/* Throbber: over the GIF while a job runs (see setLoading in app.js) */
+/* The border, shadow and background belong to this frame, not the image:
+   "Invert GIF" is a CSS filter on the image, and a filter inverts the whole
+   element - so only the picture itself is inverted, not its border. */
+.result-frame {
+  position: relative;
   box-sizing: border-box;
   width: min(100%, 500px);
-  height: auto;
   margin: 4px auto;
+  overflow: hidden; /* the image follows the rounded corners */
   border: 4px solid rgba(159, 197, 255, 0.8);
   border-radius: 12px;
   background-color: #081b3a;
   box-shadow: 0 0 0 4px rgba(82, 122, 184, 0.2), 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.throbber {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  background: rgba(30, 30, 30, 0.7); /* neutral grey: darkens the whole GIF while a job runs */
+  color: white;
+  font-family: "DM Sans", sans-serif;
+  font-size: 18px;
+  pointer-events: none;
+}
+
+.throbber[hidden] {
+  display: none;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  box-sizing: border-box;
+  border: 4px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  animation: spin 1.3s linear infinite; /* 30% slower than 0.9 s */
+}
+
+#submit-button:disabled {
+  background-color: #5a5d62;
+  color: #b9bcc1;
+  cursor: not-allowed;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#result-image {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 @media (max-width: 560px) {
