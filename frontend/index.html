@@ -26,7 +26,7 @@
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
 
     <button id="zoom-button" type="button" aria-pressed="false">Zoom</button>
-<p id="zoom-info" hidden>ⓘ Click to zoom. Drag the image to move around.</p>
+<<p id="zoom-info" hidden>ⓘ Click or select window to zoom</p>
   </div>
 </div>
     <form action="/action_page.php">
@@ -40,5 +40,11 @@
 </div>
 <input type="submit" value="Submit" style="display: block; margin: 0 auto; position: relative; top: 380px; left: 280px">     
  <img src="image.png" alt="Trulli" width="500" height="333" draggable="false" style="display: block; margin: 60px auto 0; position: relative; top: -100px; left: -140px">
-  </body>
+  </form>
+
+<div id="zoom-selection" hidden></div>
+<dialog id="zoom-dialog" aria-label="Zoomed image">
+  <button id="zoom-close" type="button" aria-label="Close zoom">×</button>
+  <canvas id="zoom-canvas" role="img" aria-label="Zoomed image selection"></canvas>
+</dialog></body>
 </html>
