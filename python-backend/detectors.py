@@ -49,7 +49,9 @@ def select(exposures: list, detectors: tuple[int, ...] = ALL_DETECTORS) -> list:
 
 # At most this many images go into one frame. Fewer = faster (less to download
 # and align) but noisier. A frame often has 50+ images available.
-MAX_IMAGES_PER_FRAME = 12
+# 18 = 3 per detector when all 6 are there: with >= 3 images the median throws
+# out glitch pixels (cosmic rays etc.), which matters because FLAGS isn't read.
+MAX_IMAGES_PER_FRAME = 18
 
 
 def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME) -> list:
@@ -91,6 +93,24 @@ def combine(images_by_detector: dict[int, list[np.ndarray]]) -> np.ndarray:
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN pixels are fine
-        per_detector = [np.nanmedian(imgs, axis=0) if len(imgs) >= 3 else np.nanmean(imgs, axis=0)
+        per_detector = [nanmedian_stack(imgs) if len(imgs) >= 3 else np.nanmean(imgs, axis=0)
                         for imgs in images_by_detector.values()]
         return np.nanmean(per_detector, axis=0)
+
+
+def nanmedian_stack(images: list[np.ndarray]) -> np.ndarray:
+    """Pixel-wise median of a few images, ignoring NaN - same result as np.nanmedian.
+
+    np.nanmedian falls back to a very slow per-pixel loop when there are NaNs
+    (28 of 38 s for 2000x2000 frames). Instead: sort each pixel's values in one
+    go (NaNs end up last), count the valid ones, take the middle one (or the
+    average of the two middle ones).
+    """
+    stack = np.sort(np.asarray(images), axis=0)
+    n_valid = np.isfinite(stack).sum(axis=0)
+    last = stack.shape[0] - 1
+    lo = np.clip((n_valid - 1) // 2, 0, last)[None]  # n odd: lo == hi
+    hi = np.clip(n_valid // 2, 0, last)[None]
+    median = (np.take_along_axis(stack, lo, axis=0)[0] + np.take_along_axis(stack, hi, axis=0)[0]) / 2
+    median[n_valid == 0] = np.nan
+    return median
