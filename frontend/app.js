@@ -69,7 +69,7 @@ earthTextureImage.addEventListener("error", () => {
   console.error(earthTextureError);
   globeStatus.textContent = "The Earth texture could not be loaded; check the network connection.";
 }, { once: true });
-earthTextureImage.src = "https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg";
+earthTextureImage.src = "./earth.jpg";
 
 function parseBackendAngle(rawValue, coordinate) {
   const value = rawValue.trim();
