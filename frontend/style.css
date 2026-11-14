@@ -252,6 +252,7 @@ color: white;}
 }
 
 .coordinate-fields span {
+  margin-top: 14px;
   color: #9eb4d8;
   font-size: 13px;
 }
