@@ -2,15 +2,20 @@
 
 import json
 import math
+import os
+import shutil
 import sys
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
+from uuid import UUID
 
-from middleware import sendToBackend
+from middleware import main
 
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+VIDEO_CACHE_DIR = Path(__file__).resolve().parent / "video_cache"
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -24,6 +29,43 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_video(self, head_only=False):
+        path = urlsplit(self.path).path
+        prefix = "/api/videos/"
+        if not path.startswith(prefix):
+            return False
+
+        name = path[len(prefix):]
+        try:
+            uuid = str(UUID(name.removesuffix(".gif")))
+            if name != f"{uuid}.gif":
+                raise ValueError("Invalid video name")
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return True
+
+        video_path = VIDEO_CACHE_DIR / name
+        try:
+            with video_path.open("rb") as video:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/gif")
+                self.send_header("Content-Length", str(os.fstat(video.fileno()).st_size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                if not head_only:
+                    shutil.copyfileobj(video, self.wfile)
+        except FileNotFoundError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+        return True
+
+    def do_GET(self):
+        if not self.send_video():
+            super().do_GET()
+
+    def do_HEAD(self):
+        if not self.send_video(head_only=True):
+            super().do_HEAD()
 
     def do_POST(self):
         if self.path != "/api/send-to-backend":
@@ -46,7 +88,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not 50 <= PIXELS <= 500 or not 25 <= MS <= 1000:
                 raise ValueError("Pixel Size or Speed is outside its allowed range")
 
-            uuid = sendToBackend(DEC, RA, PIXELS, MS)
+            uuid = main(DEC, RA, PIXELS, MS)
         except (KeyError, TypeError, ValueError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return

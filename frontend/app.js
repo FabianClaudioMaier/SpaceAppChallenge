@@ -3,7 +3,7 @@ const settingsPanel = document.querySelector("#settings-panel");
 const invertButton = document.querySelector("#invert-pixel");
 const speedInput = document.querySelector("#speed");
 const speedValue = document.querySelector("#speed-value");
-const image = document.querySelector("form img");
+const image = document.querySelector("#result-image");
 const pixelSizeInput = document.querySelector("#pixel-size");
 const pixelSizeValue = document.querySelector("#pixel-size-value");
 const zoomSelection = document.querySelector("#zoom-selection");
@@ -16,6 +16,36 @@ const declinationInput = document.querySelector("#lname");
 const submitButton = coordinateForm.querySelector('input[type="submit"]');
 
 let currentVideoUuid = localStorage.getItem("videoUuid");
+let activeVideoPoll = 0;
+const previewImageSrc = image.getAttribute("src");
+
+async function displayVideo(uuid) {
+  const poll = ++activeVideoPoll;
+  const videoUrl = `/api/videos/${encodeURIComponent(uuid)}.gif`;
+
+  while (poll === activeVideoPoll) {
+    try {
+      const response = await fetch(videoUrl, { method: "HEAD", cache: "no-store" });
+      if (response.ok) {
+        if (poll === activeVideoPoll) {
+          image.src = videoUrl;
+          image.alt = "Generated astronomy animation";
+        }
+        return;
+      }
+      if (response.status !== 404) {
+        console.warn(`Video request failed: HTTP ${response.status}`);
+      }
+    } catch (error) {
+      console.warn("Waiting for the video server:", error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
+if (currentVideoUuid) {
+  void displayVideo(currentVideoUuid);
+}
 
 rightAscensionInput.value = localStorage.getItem("rightAscension") ?? "";
 declinationInput.value = localStorage.getItem("declination") ?? "";
@@ -67,6 +97,9 @@ coordinateForm.addEventListener("submit", async (event) => {
     );
     currentVideoUuid = uuid;
     localStorage.setItem("videoUuid", uuid);
+    image.src = previewImageSrc;
+    image.alt = "Astronomy preview while the video is created";
+    void displayVideo(uuid);
     console.info("Middleware returned UUID:", currentVideoUuid);
   } catch (error) {
     console.error("Submission failed:", error);
