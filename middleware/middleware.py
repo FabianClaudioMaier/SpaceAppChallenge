@@ -6,16 +6,22 @@ import time
 from uuid import uuid4
 
 
-def main(DEC, RA, PIXELS, interval=500):
+def main(DEC, RA, PIXELS, interval):
     '''
-    Main function to test the middleware functions.
+    Main function to run the middleware.
+
+    Parameters:
+    DEC: Declination coordinate in degrees
+    RA: Right Ascension coordinate in degrees
+    PIXELS: Number of pixels to generate
+    interval: Duration in milliseconds for each frame in the GIF
     '''
 
     uuid = sendToBackend(DEC, RA, PIXELS)
     Images = getImages(uuid)
-    Video = convertToVideo(Images, interval=interval)
+    Video = convertToVideo(Images, interval)
     video_id = sendToFrontend(Video, uuid)
-    print(f"Video ID: {video_id}")
+    return video_id
 
 
 def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
@@ -28,7 +34,6 @@ def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
     DEC: Declination coordinate in degrees
     RA: Right Ascension coordinate in degrees
     PIXELS: Number of pixels to generate
-    MS: Milliseconds to wait between each image in the gif
 
     Output: uuid for this submission
     '''
@@ -63,14 +68,14 @@ def getImages(uuid):
     return Images
 
 
-def convertToVideo(Images, Timestamps=None, interval=500):
+def convertToVideo(Images, interval):
     """
     Converts images into a GIF, sorting by timestamps when provided.
 
     Parameters:
     Images: List of JPG image paths.
     Timestamps: Optional timestamps corresponding to Images in UTC format.
-    interval: Duration in milliseconds for each frame in the GIF (default: 500ms).
+    interval: Duration in milliseconds for each frame in the GIF.
 
     Output: GIF image as bytes.
     """
@@ -82,28 +87,6 @@ def convertToVideo(Images, Timestamps=None, interval=500):
         )
 
     image_paths = list(Images)
-    if Timestamps is not None:
-        if len(image_paths) != len(Timestamps):
-            raise ValueError("Images and Timestamps must have the same length")
-
-        image_timestamps = []
-        for i, (image, timestamp) in enumerate(zip(image_paths, Timestamps)):
-            if not isinstance(image, str) or not image.lower().endswith('.jpg'):
-                raise ValueError(f"Image at index {i} is not a valid JPG file")
-            if not isinstance(timestamp, str):
-                raise ValueError(f"Timestamp at index {i} is not a valid string")
-            try:
-                parsed_timestamp = datetime.strptime(
-                    timestamp, '%Y-%m-%d %H:%M:%S'
-                )
-            except ValueError as exc:
-                raise ValueError(
-                    f"Timestamp at index {i} must use YYYY-MM-DD HH:MM:SS format"
-                ) from exc
-            image_timestamps.append((parsed_timestamp, image))
-
-        image_timestamps.sort(key=lambda item: item[0])
-        image_paths = [image for _, image in image_timestamps]
 
     frames = []
     try:
