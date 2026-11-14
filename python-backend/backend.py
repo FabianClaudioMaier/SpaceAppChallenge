@@ -17,8 +17,13 @@ Called by the middleware:
 What happens:
     1. Cache/usr/.pending_<UUID>/ is created
     2. the frames are built into it:
-         frame_000.jpg, frame_001.jpg, ...   oldest first, PIXELS x PIXELS, grayscale
-         meta.json                           status, timestamps, frame info
+         frame_000.jpg, frame_001.jpg, ...   oldest first, PIXELS x PIXELS, colour
+                                             (blue = D1-D3 0.75-2.4 um, red = D4-D6 2.4-5 um)
+         diff/diff_000.jpg, ...              each frame minus the average of all frames
+                                             (grey = unchanged, white = brighter now,
+                                             black = was brighter) - a subfolder, so the
+                                             middleware's *.jpg list doesn't pick it up
+         meta.json                           status, timestamps, frame info, catalogue links
     3. the folder is renamed to Cache/usr/<UUID>/ and the program exits
     The backend never deletes anything in Cache/usr/ - the middleware does that.
     On an error the folder is renamed as well, with meta.json["status"] == "error".
@@ -32,12 +37,14 @@ Exit codes (the description goes to stderr and into meta.json["error"]):
     5  Cache/usr/<UUID>/ or Cache/usr/.pending_<UUID>/ already exists
 
 Pipeline:
-    find_exposures     IRSA query: every SPHEREx image that covers (ra, dec)
-    group_into_frames  split the images into time bins (1 bin = 1 video frame)
-    read_cutout        read only a small square of each image (public AWS copy)
-    reproject_cutout   line every square up on one common grid
-    detectors.combine  squash each bin into one picture
-    render_frames      same brightness scale for every frame -> JPGs
+    find_exposures       IRSA query: every SPHEREx image that covers (ra, dec)
+    group_into_frames    one frame per SPHEREx pass over the spot (few, deep frames)
+    read_cutout          read only a small square of each image (public AWS copy)
+    subtract_background  local sky model per image (removes gradients/bands) + noise
+    reproject_cutout     line every square up on one common grid
+    detectors.combine    kappa-sigma stack per detector, noise-weighted per colour
+    render_frames        same brightness scale for every frame -> colour JPGs
+    render_differences   frame minus average -> movers stand out
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
 import uuid as uuidlib
 import warnings
 from collections import deque
@@ -68,7 +76,7 @@ from astropy.visualization import AsinhStretch, ImageNormalize
 from astropy.wcs import WCS, FITSFixedWarning
 from astroquery.ipac.irsa import Irsa
 from PIL import Image
-from scipy.ndimage import binary_fill_holes, map_coordinates
+from scipy.ndimage import binary_fill_holes, gaussian_filter, map_coordinates, median_filter
 
 import detectors
 
@@ -98,7 +106,19 @@ COLLECTION_RE = re.compile(r"^spherex_dr(\d+)$")
 
 PIXEL_SCALE_ARCSEC = 6.15
 MIN_PIXELS, MAX_PIXELS = 3, 2040  # 2040 = width of one SPHEREx detector
-BIN_DAYS = 10.0                   # images closer together than this form one frame
+
+# One frame per SPHEREx pass over the spot (like Backyard Worlds' epochs): few,
+# deep frames instead of many noisy ones a few days apart.
+EPOCH_GAP_DAYS = 30.0   # a gap longer than this between images starts a new frame
+EPOCH_MAX_DAYS = 60.0   # a frame never spans longer (spots near the ecliptic
+                        # poles are seen almost continuously)
+
+# Sky level is estimated per tile of this many pixels (~3.3') and smoothed, so
+# large-scale gradients and stray-light bands are removed but stars are kept.
+BACKGROUND_TILE = 32
+
+# Frames in colour (blue = D1-D3, red = D4-D6, see detectors.CHANNELS) or grey.
+COLOR_FRAMES = True
 # Two kinds of workers (see build_frames):
 #  - DOWNLOAD_THREADS threads fetch images into the cache. Waiting for the
 #    network needs almost no CPU, so many at once is cheap.
@@ -293,17 +313,19 @@ def find_exposures(ra: float, dec: float, collection: str) -> list[Exposure]:
 
 
 # --------------------------------------------------------------------------- #
-# 2. Time bins -> video frames
+# 2. SPHEREx passes -> video frames
 # --------------------------------------------------------------------------- #
-def group_into_frames(exposures: list[Exposure], bin_days: float = BIN_DAYS) -> list[list[Exposure]]:
-    """A new frame starts once an image is > bin_days after the frame's first one.
+def group_into_frames(exposures: list[Exposure]) -> list[list[Exposure]]:
+    """One frame per SPHEREx pass over the spot.
 
-    SPHEREx sees a given spot for a few days-weeks every ~6 months, so you get
-    ~2-6 frames per year of data.
+    SPHEREx sees a given spot for a few days to weeks every ~6 months. A new
+    frame starts after a gap of more than EPOCH_GAP_DAYS, or once the frame
+    would span more than EPOCH_MAX_DAYS -> typically 2-3 deep frames per year.
     """
     frames: list[list[Exposure]] = []
     for e in sorted(exposures, key=lambda e: e.mjd):
-        if frames and e.mjd - frames[-1][0].mjd <= bin_days:
+        if (frames and e.mjd - frames[-1][-1].mjd <= EPOCH_GAP_DAYS
+                and e.mjd - frames[-1][0].mjd <= EPOCH_MAX_DAYS):
             frames[-1].append(e)
         else:
             frames.append([e])
@@ -564,55 +586,179 @@ def make_alignment_grid(grid: WCS, npix: int, step: int = ALIGN_STEP) -> Alignme
     return AlignmentGrid(coarse_ra, coarse_dec, np.stack([fy, fx]))
 
 
-def reproject_cutout(cut: Cutout, align: AlignmentGrid) -> np.ndarray:
-    """Resample one cutout onto the common output grid."""
+def reproject_cutout(cut: Cutout, align: AlignmentGrid, data: np.ndarray | None = None) -> np.ndarray:
+    """Resample one cutout (or `data` in the cutout's pixel layout) onto the common output grid."""
     x, y = cut.wcs.world_to_pixel_values(align.coarse_ra, align.coarse_dec)  # exact, few points
     x_full = map_coordinates(x, align.fine_index, order=1)  # in between: interpolated
     y_full = map_coordinates(y, align.fine_index, order=1)
-    return map_coordinates(cut.data, [y_full - cut.y0, x_full - cut.x0], order=1,
-                           mode="constant", cval=np.nan)
+    return map_coordinates(cut.data if data is None else data, [y_full - cut.y0, x_full - cut.x0],
+                           order=1, mode="constant", cval=np.nan)
+
+
+def subtract_background(data: np.ndarray) -> tuple[np.ndarray, float]:
+    """Remove the sky (zodiacal light, stray-light bands, gradients) and measure the noise.
+
+    Like a background mesh: the sky level is a sigma-clipped median per
+    BACKGROUND_TILE x BACKGROUND_TILE tile (stars are clipped away), smoothed
+    over 3x3 tiles (one star-filled tile can't dent it), interpolated back to
+    every pixel and subtracted. Squares too small for tiles get one level.
+    -> (data minus background, noise sigma of the result)
+    """
+    ny, nx = data.shape
+    t = BACKGROUND_TILE
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # all-NaN tiles are fine
+        if min(ny, nx) >= 2 * t:
+            ty, tx = math.ceil(ny / t), math.ceil(nx / t)
+            padded = np.full((ty * t, tx * t), np.nan, np.float32)
+            padded[:ny, :nx] = data
+            tiles = padded.reshape(ty, t, tx, t).swapaxes(1, 2).reshape(ty, tx, t * t)
+            level = np.asarray(sigma_clipped_stats(tiles, axis=2, sigma=3, maxiters=3)[1], float)
+            known = np.isfinite(level)
+            if known.any():
+                level[~known] = np.median(level[known])
+                level = median_filter(level, size=3, mode="nearest")
+                gy, gx = np.meshgrid((np.arange(ny) + 0.5) / t - 0.5, (np.arange(nx) + 0.5) / t - 0.5,
+                                     indexing="ij")
+                background = map_coordinates(level, [gy, gx], order=1, mode="nearest")
+            else:
+                background = 0.0
+        else:
+            good = data[np.isfinite(data)]
+            background = sigma_clipped_stats(good)[1] if good.size else 0.0
+        out = (data - background).astype(np.float32)
+        sample = out[::4, ::4] if out.size > 250_000 else out
+        good = sample[np.isfinite(sample)]
+        noise = float(sigma_clipped_stats(good)[2]) if good.size > 10 else float("nan")
+    return out, noise
 
 
 # --------------------------------------------------------------------------- #
 # 5. Rendering (same brightness scale for every frame, or blinking is useless)
 # --------------------------------------------------------------------------- #
-def fill_enclosed_holes(img01: np.ndarray) -> np.ndarray:
-    """Make "no data" (NaN) holes that are completely surrounded by image white.
+def enclosed_holes(valid: np.ndarray) -> np.ndarray:
+    """"No data" pixels completely surrounded by image.
 
     Very bright stars saturate the detector and SPHEREx sets their centre to NaN,
     which would show as a black hole inside a bright ring. After stacking, a
     pixel is only NaN if it had no data in *every* image of the frame - inside
     the image that practically means saturated, i.e. "brighter than measurable"
-    -> white. NaN touching the frame edge (area not covered by any image) is
-    left alone and later drawn black.
+    -> drawn white. NaN touching the frame edge (area not covered by any image)
+    is not a hole and is drawn black.
     """
-    valid = np.isfinite(img01)
-    holes = binary_fill_holes(valid) & ~valid
-    if not holes.any():
-        return img01
-    out = img01.copy()
-    out[holes] = 1.0
+    return binary_fill_holes(valid) & ~valid
+
+
+def _shared_stretch(images: list[np.ndarray | None]) -> ImageNormalize:
+    """One brightness scale for all frames, or blinking between them is useless."""
+    finite = [img[np.isfinite(img)] for img in images if img is not None]
+    values = np.concatenate(finite) if finite else np.array([])
+    if values.size == 0:
+        values = np.array([0.0, 1.0])
+    vmin, vmax = np.percentile(values, [0.5, 99.8])
+    return ImageNormalize(vmin=vmin, vmax=vmax, stretch=AsinhStretch(0.1), clip=True)
+
+
+def _save_jpg(img01: np.ndarray, path: Path) -> None:
+    """(H, W) grey or (H, W, 3) colour values 0..1 -> JPG (FITS row 0 is the bottom)."""
+    arr = (np.clip(img01, 0, 1) * 255).astype(np.uint8)
+    Image.fromarray(np.ascontiguousarray(np.flipud(arr))).save(path, quality=92)
+
+
+def render_frames(frames: list[dict], out_dir: Path) -> list[str]:
+    """Write frame_000.jpg ... (exactly the frame size, no upscaling). Returns file names.
+
+    Colour like Backyard Worlds: red = D4-D6, blue = D1-D3, green = their
+    average; each channel has its own brightness scale shared by all frames.
+    A frame missing one channel is drawn grey from the other.
+    """
+    stretch = {c: _shared_stretch([f[c] for f in frames]) for c in ("blue", "red", "all")}
+    names = []
+    for i, f in enumerate(frames):
+        holes = enclosed_holes(np.isfinite(f["all"]))
+        if COLOR_FRAMES and (f["blue"] is not None or f["red"] is not None):
+            def channel(name):
+                if f[name] is None:
+                    return None
+                c = np.asarray(stretch[name](f[name]), float)
+                # a star can saturate in one channel only: white there too, not black
+                c[enclosed_holes(np.isfinite(c))] = 1.0
+                return c
+            blue, red = channel("blue"), channel("red")
+            blue = red if blue is None else blue
+            red = blue if red is None else red
+            img01 = np.stack([red, (red + blue) / 2, blue], axis=-1)
+        else:
+            img01 = np.asarray(stretch["all"](f["all"]), float)
+        img01[holes] = 1.0              # saturated star centres: white
+        img01 = np.nan_to_num(img01, nan=0.0)  # not covered by any image: black
+        name = f"frame_{i:03d}.jpg"
+        _save_jpg(img01, out_dir / name)
+        names.append(name)
+    return names
+
+
+# Before subtracting, frames are blurred by this much (Gaussian sigma, pixels).
+# SPHEREx pixels are coarse compared to a star, so the same star lands slightly
+# differently on the pixel grid in each pass; unblurred, almost every star would
+# leave a small black/white pair. 0 = no blur.
+DIFF_SMOOTH_PX = 1.5
+
+
+def _smooth(img: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian blur that ignores NaN (normalised convolution); NaN stays NaN."""
+    if sigma <= 0:
+        return img
+    ok = np.isfinite(img)
+    num = gaussian_filter(np.where(ok, img, 0.0), sigma)
+    den = gaussian_filter(ok.astype(float), sigma)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = num / den
+    out[~ok] = np.nan
     return out
 
 
-def render_frames(frames: list[np.ndarray], out_dir: Path) -> list[str]:
-    """Write frame_000.jpg ... (exactly the frame size, no upscaling). Returns file names."""
-    finite = np.concatenate([f[np.isfinite(f)] for f in frames])
-    if finite.size == 0:
-        finite = np.array([0.0, 1.0])
-    vmin, vmax = np.percentile(finite, [0.5, 99.8])
-    norm = ImageNormalize(vmin=vmin, vmax=vmax, stretch=AsinhStretch(0.1), clip=True)
+def render_differences(frames: list[dict], out_dir: Path) -> list[str]:
+    """Write diff/diff_000.jpg ...: each frame minus the average of all frames.
 
+    Like Backyard Worlds' difference images: stars that don't change cancel to
+    grey; a moving object is white where it is in this frame and black where it
+    is in the others (a "dipole"); a variable star is white or black.
+    """
+    if len(frames) < 2:
+        return []
+    smoothed = [_smooth(f["all"], DIFF_SMOOTH_PX) for f in frames]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        reference = np.nanmean(smoothed, axis=0)
+    diffs = [s - reference for s in smoothed]
+    spread = np.concatenate([np.abs(d[np.isfinite(d)]) for d in diffs])
+    limit = float(np.percentile(spread, 99.5)) if spread.size else 1.0
+    limit = limit if limit > 0 else 1.0
+
+    (out_dir / "diff").mkdir(exist_ok=True)
     names = []
-    for i, frame in enumerate(frames):
-        img01 = np.asarray(norm(frame), dtype=float)
-        img01 = fill_enclosed_holes(img01)
-        img01 = np.nan_to_num(img01, nan=0.0)  # remaining "no data" (e.g. off the detector): black
-        arr = (np.clip(img01, 0, 1) * 255).astype(np.uint8)
-        name = f"frame_{i:03d}.jpg"
-        Image.fromarray(np.flipud(arr), mode="L").save(out_dir / name, quality=92)  # FITS row 0 = bottom
+    for i, d in enumerate(diffs):
+        img01 = np.nan_to_num(0.5 + d / (2 * limit), nan=0.5)  # grey = no change
+        name = f"diff/diff_{i:03d}.jpg"
+        _save_jpg(img01, out_dir / name)
         names.append(name)
     return names
+
+
+def catalogue_links(ra: float, dec: float, pixels: int) -> dict[str, str]:
+    """Look up what's known in the field (Backyard Worlds' volunteers check these)."""
+    radius_arcmin = pixels * PIXEL_SCALE_ARCSEC / 60 / 2 * math.sqrt(2)
+    coord = f"{ra:.6f} {dec:+.6f}"
+    q = urllib.parse.urlencode
+    return {
+        "simbad": "https://simbad.cds.unistra.fr/simbad/sim-coo?"
+                  + q({"Coord": coord, "Radius": f"{radius_arcmin:.2f}", "Radius.unit": "arcmin"}),
+        "vizier": "https://vizier.cds.unistra.fr/viz-bin/VizieR?"
+                  + q({"-c": coord, "-c.rs": f"{radius_arcmin * 60:.0f}"}),
+        "aladin": "https://aladin.cds.unistra.fr/AladinLite/?"
+                  + q({"target": coord, "fov": f"{pixels * PIXEL_SCALE_ARCSEC / 3600:.3f}"}),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -674,9 +820,10 @@ def _init_worker(ra: float, dec: float, half: int, collection: str, pixels: int)
 
 
 def _load_one(exp: Exposure) -> tuple:
-    """Runs in a worker process: load the square (from the cache) and line it up.
+    """Runs in a worker process: load the square (from the cache), remove its sky
+    background and line it up.
 
-    -> ("ok", exposure, lined-up image, flags) | ("off_chip",) | ("failed", reason)
+    -> ("ok", exposure, lined-up image, flags, noise) | ("off_chip",) | ("failed", reason)
     Only the lined-up PIXELS x PIXELS image is sent back, so memory stays small.
     """
     j = _JOB
@@ -686,7 +833,8 @@ def _load_one(exp: Exposure) -> tuple:
         return ("failed", str(exc))
     if cut is None:
         return ("off_chip",)
-    return ("ok", exp, reproject_cutout(cut, j["align"]), cut.flags_near_target)
+    data, noise = subtract_background(cut.data)
+    return ("ok", exp, reproject_cutout(cut, j["align"], data), cut.flags_near_target, noise)
 
 
 # --------------------------------------------------------------------------- #
@@ -737,14 +885,16 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
             if not loaded:
                 continue
             by_detector: dict[int, list[np.ndarray]] = {}
+            noise_by_detector: dict[int, list[float]] = {}
             flags = 0
-            for exp, img, f in loaded:
+            for exp, img, f, noise in loaded:
                 by_detector.setdefault(exp.detector, []).append(img)
+                noise_by_detector.setdefault(exp.detector, []).append(noise)
                 flags |= f
-            frame = detectors.combine(by_detector)
-            if not np.isfinite(frame).any():
+            frame = detectors.combine(by_detector, noise_by_detector)
+            if not np.isfinite(frame["all"]).any():
                 continue
-            mjds = [exp.mjd for exp, _, _ in loaded]
+            mjds = [exp.mjd for exp, *_ in loaded]
             frames.append(frame)
             frame_meta.append({
                 "timestamp": Time(float(np.mean(mjds)), format="mjd").isot,
@@ -753,6 +903,7 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
                 "date_end": Time(max(mjds), format="mjd").iso[:10],
                 "n_images": len(loaded),
                 "detectors": sorted(by_detector),
+                "channels": [c for c in ("blue", "red") if frame[c] is not None],
                 "flag_bits_near_target": ([b for b in range(32) if flags >> b & 1]
                                           if USE_FLAGS else None),  # None = FLAGS not read
             })
@@ -764,18 +915,24 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
         raise BackendError(EXIT_NO_DATA, f"no {collection} images cover RA={ra:.5f} Dec={dec:+.5f}")
 
     names = render_frames(frames, out_dir)
-    for meta, name in zip(frame_meta, names):
+    diff_names = render_differences(frames, out_dir)
+    for i, (meta, name) in enumerate(zip(frame_meta, names)):
         meta["image"] = name
+        meta["difference_image"] = diff_names[i] if diff_names else None
 
     return {
         "collection": collection,
         "pixel_scale_arcsec": PIXEL_SCALE_ARCSEC,
         "detectors": list(use_detectors),
+        "colour": ({"red": "D4-D6 (2.4-5.0 um)", "green": "average of red and blue",
+                    "blue": "D1-D3 (0.75-2.4 um)"} if COLOR_FRAMES else None),
         "images": names,
         "timestamps": [m["timestamp"] for m in frame_meta],
+        "difference_images": diff_names,
         "frames": frame_meta,
         "images_failed": n_failed,
         "time_bins_skipped": bins_skipped,
+        "links": catalogue_links(ra, dec, pixels),
     }
 
 

@@ -5,9 +5,15 @@ SPHEREx has 6 detector arrays. Each one sees a different slice of infrared
 light (and inside a detector the wavelength changes slowly across the chip,
 which is where the 102 "bands" come from: 17 per detector).
 
-By default all six are used and averaged into a single picture. To use only
-some of them later, pass e.g. parse_detectors("56") - brown dwarfs are much
-brighter in D5/D6 (3.8-5.0 um) than in D1.
+By default all six are used. Like Backyard Worlds (WISE W1 = blue, W2 = red),
+the short-wavelength detectors D1-D3 become the blue channel and the long ones
+D4-D6 the red channel of a colour picture, so objects that are much brighter at
+long wavelengths - brown dwarfs, cold planets - stand out red. To use only some
+detectors, pass e.g. parse_detectors("56").
+
+Stacking follows DeepSkyStacker's "median kappa-sigma": per detector, values
+far from the median (glitches) are thrown out, the rest are averaged, and
+noisier images and detectors count less (weights 1 / noise^2).
 """
 
 from __future__ import annotations
@@ -26,6 +32,12 @@ WAVELENGTH_UM: dict[int, tuple[float, float]] = {
     4: (2.40, 3.85),
     5: (3.81, 4.43),
     6: (4.41, 5.01),
+}
+
+# Colour channels of the rendered frames (green = average of the two).
+CHANNELS: dict[str, tuple[int, ...]] = {
+    "blue": (1, 2, 3),  # 0.75 - 2.4 um
+    "red": (4, 5, 6),   # 2.4  - 5.0 um
 }
 
 
@@ -48,10 +60,9 @@ def select(exposures: list, detectors: tuple[int, ...] = ALL_DETECTORS) -> list:
 
 
 # At most this many images go into one frame. Fewer = faster (less to download
-# and align) but noisier. A frame often has 50+ images available.
-# 18 = 3 per detector when all 6 are there: with >= 3 images the median throws
-# out glitch pixels (cosmic rays etc.), which matters because FLAGS isn't read.
-MAX_IMAGES_PER_FRAME = 18
+# and align) but noisier. A frame (one SPHEREx pass over the spot) often has
+# 100+ images available. 36 = 6 per detector when all 6 are there.
+MAX_IMAGES_PER_FRAME = 36
 
 
 # A detector needs at least this many images in a frame: the median of 3 throws
@@ -93,18 +104,73 @@ def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME,
     return sorted(chosen, key=lambda e: (e.mjd, e.detector))
 
 
-def combine(images_by_detector: dict[int, list[np.ndarray]]) -> np.ndarray:
-    """Squash all images of one time bin into one picture.
+# Kappa-sigma rejection: a value is thrown out if it is further than
+#   KAPPA x (that image's noise) + RELATIVE_TOLERANCE x |median|
+# from the median of its detector. The relative part keeps bright stars, whose
+# brightness differs a bit between images because each image sees them at a
+# slightly different wavelength.
+KAPPA = 4.0
+RELATIVE_TOLERANCE = 0.25
 
-    1. per detector: robust median of its images (throws out glitch pixels,
-       see robust_median_stack)
-    2. average the detectors together
-    NaN pixels (bad or not covered) are ignored.
+
+def combine(images_by_detector: dict[int, list[np.ndarray]],
+            noise_by_detector: dict[int, list[float]]) -> dict[str, np.ndarray | None]:
+    """Squash all images of one frame.
+
+    1. per detector: median kappa-sigma stack (stack_detector)
+    2. per colour channel and over all detectors: noise-weighted mean
+    -> {"blue": ..., "red": ..., "all": ...}; a channel is None when none of
+       its detectors is in this frame. NaN pixels (not covered) are ignored.
     """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN pixels are fine
-        per_detector = [robust_median_stack(imgs) for imgs in images_by_detector.values()]
-        return np.nanmean(per_detector, axis=0)
+    stacks = {d: stack_detector(images_by_detector[d], noise_by_detector[d])
+              for d in images_by_detector}
+    result: dict[str, np.ndarray | None] = {
+        name: weighted_mean([stacks[d] for d in dets if d in stacks])
+        for name, dets in CHANNELS.items()}
+    result["all"] = weighted_mean(list(stacks.values()))
+    return result
+
+
+def stack_detector(images: list[np.ndarray], noises: list[float]) -> tuple[np.ndarray, float]:
+    """Median kappa-sigma stack of one detector's images -> (image, its noise).
+
+    Glitches (cosmic rays etc.) appear in one image only, far from the median,
+    and are thrown out; the remaining values are averaged with weights
+    1 / noise^2, which is less noisy than the median alone.
+    """
+    stack = np.asarray(images, dtype=np.float32)
+    sigma = np.asarray(noises, dtype=np.float32)
+    usable = np.isfinite(sigma) & (sigma > 0)
+    sigma = np.where(usable, sigma, np.median(sigma[usable]) if usable.any() else 1.0)
+    sigma = sigma.reshape(-1, 1, 1)
+
+    centre = robust_median_stack(stack)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        keep = np.abs(stack - centre) <= KAPPA * sigma + RELATIVE_TOLERANCE * np.abs(centre)
+        weight = np.where(keep, 1.0 / sigma**2, 0.0).astype(np.float32)
+        total = weight.sum(axis=0)
+        mean = np.where(keep, stack * weight, 0.0).sum(axis=0) / total
+    mean[total == 0] = np.nan
+    good = total[total > 0]
+    noise = float(1.0 / np.sqrt(np.median(good))) if good.size else float("inf")
+    return mean.astype(np.float32), noise
+
+
+def weighted_mean(stacks: list[tuple[np.ndarray, float]]) -> np.ndarray | None:
+    """Pixel-wise mean of several (image, noise) stacks, weighted 1 / noise^2; None if empty."""
+    if not stacks:
+        return None
+    num = np.zeros_like(stacks[0][0], dtype=np.float64)
+    den = np.zeros_like(num)
+    for img, noise in stacks:
+        w = 1.0 / noise**2 if np.isfinite(noise) and noise > 0 else 0.0
+        ok = np.isfinite(img)
+        num += np.where(ok, img, 0.0) * w
+        den += ok * w
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = num / den
+    out[den == 0] = np.nan
+    return out.astype(np.float32)
 
 
 def robust_median_stack(images: list[np.ndarray]) -> np.ndarray:
