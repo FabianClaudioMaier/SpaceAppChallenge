@@ -30,7 +30,7 @@ color: white;}
 .settings {
   position: fixed;
   top: 16px;
-  left: calc(50% + var(--submit-offset));
+  left: calc(50% + var(--submit-offset) + 150px);
   transform: translateX(-50%);
   width: 300px;
   z-index: 100;
