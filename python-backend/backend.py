@@ -48,6 +48,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 import uuid as uuidlib
 import warnings
@@ -58,6 +59,7 @@ from pathlib import Path
 
 import astropy.units as u
 import numpy as np
+import requests
 from astropy.coordinates import Angle, SkyCoord
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
@@ -329,27 +331,151 @@ class DownloadError(Exception):
     pass
 
 
-def _read_cutout_remote(url: str, exp: Exposure, ra: float, dec: float, half: int) -> Cutout | None:
-    # fsspec downloads in blocks of this size. Image rows are stored one after
-    # another, so a block as big as all rows of the square fetches it in ~1
-    # request (measured for 729 px: 0.8 s / 6 MB instead of 2.2 s / 11 MB with
-    # 1 MB blocks). With FLAGS, big blocks would drag in lots of FLAGS data.
-    rows_bytes = (2 * half + 1) * MAX_PIXELS * 4  # MAX_PIXELS = detector width, float32
-    block_size = 1024**2 if USE_FLAGS else min(max(1024**2, rows_bytes + 64 * 1024), 17 * 1024**2)
-    with fits.open(url, use_fsspec=True,
-                   fsspec_kwargs={"block_size": block_size, "cache_type": "bytes"}) as h:
-        hdr = h["IMAGE"].header
-        x, y = (float(v) for v in WCS(hdr).world_to_pixel_values(ra, dec))
-        nx, ny = hdr["NAXIS1"], hdr["NAXIS2"]
-        xc, yc = round(x), round(y)
-        x0, x1 = max(xc - half, 0), min(xc + half + 1, nx)
-        y0, y1 = max(yc - half, 0), min(yc + half + 1, ny)
-        if x1 - x0 < 3 or y1 - y0 < 3:
-            return None  # the square doesn't overlap this detector
+# ---- exact byte-range downloads (used when USE_FLAGS is off) ---------------
+# A FITS file is a sequence of text headers (80-character "cards" in blocks of
+# 2880 bytes) and binary data. The IMAGE data is stored row after row as
+# big-endian float32, so the rows of our square are one contiguous byte range:
+# 1 small request for the headers + 1 request for exactly those rows.
+HEADER_PROBE_BYTES = 64 * 1024  # first bytes of the file: PRIMARY + IMAGE header (~29 KB)
+FITS_BLOCK = 2880
 
+# Stuck connections: when 32 downloads share a line, some lose packets and TCP
+# makes them wait longer and longer (measured: 1 image took 24 s while the
+# median was 6 s). Instead of waiting, abort and retry on a fresh connection:
+# Stuck connections usually still trickle (~1 Mbit/s), so "slow" is judged
+# relative to the downloads that just finished - that works on fast and slow lines.
+HTTP_CONNECT_TIMEOUT_S = 5.0
+HTTP_STALL_TIMEOUT_S = 4.0       # no bytes at all for this long -> retry
+HTTP_SLOW_AFTER_S = 3.0          # still running after this long ...
+HTTP_SLOW_FRACTION = 0.25        # ... and slower than 1/4 of the typical speed -> retry
+HTTP_MIN_BYTES_PER_S = 32_000    # never call anything faster than this "slow"
+HTTP_ATTEMPTS = 3                # the last attempt is never aborted for being slow
+
+_http = threading.local()  # one requests.Session (connection pool) per download thread
+_speeds_lock = threading.Lock()
+_recent_speeds: deque[float] = deque(maxlen=50)  # bytes/s of recently finished big requests
+
+
+def _session() -> requests.Session:
+    if not hasattr(_http, "session"):
+        _http.session = requests.Session()
+    return _http.session
+
+
+def _too_slow_below() -> float:
+    """Speed (bytes/s) under which a running download counts as stuck."""
+    with _speeds_lock:
+        speeds = sorted(_recent_speeds)
+    if len(speeds) < 5:
+        return HTTP_MIN_BYTES_PER_S  # not enough experience yet
+    return max(HTTP_MIN_BYTES_PER_S, HTTP_SLOW_FRACTION * speeds[len(speeds) // 2])
+
+
+def _http_range(url: str, start: int, end: int) -> bytes:
+    """Download bytes start..end (inclusive) of url, retrying stuck/failed attempts."""
+    want = end - start + 1
+    errors = []
+    for attempt in range(1, HTTP_ATTEMPTS + 1):
+        t0 = time.monotonic()
+        try:
+            with _session().get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True,
+                                timeout=(HTTP_CONNECT_TIMEOUT_S, HTTP_STALL_TIMEOUT_S)) as r:
+                if r.status_code != 206:  # 206 = "here is the part you asked for"
+                    raise DownloadError(f"HTTP {r.status_code} (expected 206)")
+                buf = bytearray()
+                for chunk in r.iter_content(64 * 1024):
+                    buf += chunk
+                    elapsed = time.monotonic() - t0
+                    # (the limit is re-read each time: early downloads start before
+                    # anything has finished, so "typical speed" isn't known yet)
+                    if (attempt < HTTP_ATTEMPTS and elapsed > HTTP_SLOW_AFTER_S
+                            and len(buf) / elapsed < _too_slow_below()):
+                        raise DownloadError(f"too slow ({len(buf) / elapsed / 1000:.0f} kB/s)")
+            if len(buf) != want:
+                raise DownloadError(f"got {len(buf)} of {want} bytes")
+            if want >= 256 * 1024:  # small requests are mostly waiting time, not speed
+                with _speeds_lock:
+                    _recent_speeds.append(want / max(time.monotonic() - t0, 1e-3))
+            return bytes(buf)
+        except (requests.RequestException, DownloadError) as exc:
+            errors.append(f"try {attempt}: {type(exc).__name__}: {exc}")
+    raise DownloadError("; ".join(errors))
+
+
+def _parse_header(buf: bytes, offset: int) -> tuple[fits.Header, int] | None:
+    """FITS header starting at offset -> (header, offset where its data starts).
+
+    None if the END card isn't inside buf (header longer than what we downloaded).
+    """
+    for pos in range(offset, len(buf) - 79, 80):
+        if buf[pos:pos + 8] == b"END     ":
+            header_end = offset + math.ceil((pos + 80 - offset) / FITS_BLOCK) * FITS_BLOCK
+            return fits.Header.fromstring(buf[offset:pos + 80].decode("ascii")), header_end
+    return None
+
+
+def _data_bytes(hdr: fits.Header) -> int:
+    """Size of an HDU's data on disk (padded to whole 2880-byte blocks)."""
+    naxis = hdr.get("NAXIS", 0)
+    if naxis == 0:
+        return 0
+    n = abs(hdr["BITPIX"]) // 8 * math.prod(hdr[f"NAXIS{i}"] for i in range(1, naxis + 1))
+    return math.ceil(n / FITS_BLOCK) * FITS_BLOCK
+
+
+def _read_square_ranges(url: str, ra: float, dec: float, half: int):
+    """Fast path: IMAGE header + exactly the rows of the square. See _read_square_fits for the result."""
+    buf = _http_range(url, 0, HEADER_PROBE_BYTES - 1)
+    primary = _parse_header(buf, 0)
+    image = primary and _parse_header(buf, primary[1] + _data_bytes(primary[0]))
+    if image is None or image[0].get("EXTNAME") != "IMAGE":
+        raise DownloadError("unexpected file layout (IMAGE is not the first extension)")
+    hdr, data_offset = image
+    if hdr.get("BITPIX") != -32 or hdr.get("NAXIS") != 2:
+        raise DownloadError(f"unexpected IMAGE format BITPIX={hdr.get('BITPIX')} NAXIS={hdr.get('NAXIS')}")
+
+    xc, yc, x0, x1, y0, y1, nx, ny = _square_bounds(hdr, ra, dec, half)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return hdr, None, None, (xc, yc, x0, y0, nx, ny)  # square doesn't overlap this detector
+    row_bytes = nx * 4
+    raw = _http_range(url, data_offset + y0 * row_bytes, data_offset + y1 * row_bytes - 1)
+    data = np.frombuffer(raw, dtype=">f4").reshape(y1 - y0, nx)[:, x0:x1].astype(np.float32)
+    if hdr.get("BSCALE", 1) != 1 or hdr.get("BZERO", 0) != 0:
+        data = data * np.float32(hdr.get("BSCALE", 1)) + np.float32(hdr.get("BZERO", 0))
+    return hdr, data, None, (xc, yc, x0, y0, nx, ny)
+
+
+def _read_square_fits(url: str, ra: float, dec: float, half: int):
+    """With FLAGS: generic FITS reader over HTTP (fsspec), needed for the compressed FLAGS.
+
+    -> (IMAGE header, data or None if off the detector, flags or None, (xc, yc, x0, y0, nx, ny))
+    """
+    with fits.open(url, use_fsspec=True,
+                   fsspec_kwargs={"block_size": 1024**2, "cache_type": "bytes"}) as h:
+        hdr = h["IMAGE"].header
+        xc, yc, x0, x1, y0, y1, nx, ny = _square_bounds(hdr, ra, dec, half)
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            return hdr, None, None, (xc, yc, x0, y0, nx, ny)
         data = np.array(h["IMAGE"].section[y0:y1, x0:x1], dtype=np.float32)
-        flags = (np.array(h["FLAGS"].section[y0:y1, x0:x1]).astype(np.int64) & 0xFFFFFFFF
-                 if USE_FLAGS else None)
+        flags = np.array(h["FLAGS"].section[y0:y1, x0:x1]).astype(np.int64) & 0xFFFFFFFF
+    return hdr, data, flags, (xc, yc, x0, y0, nx, ny)
+
+
+def _square_bounds(hdr: fits.Header, ra: float, dec: float, half: int):
+    """Where the target is in this image and which part of the image the square covers."""
+    x, y = (float(v) for v in WCS(hdr).world_to_pixel_values(ra, dec))
+    nx, ny = hdr["NAXIS1"], hdr["NAXIS2"]
+    xc, yc = round(x), round(y)
+    x0, x1 = max(xc - half, 0), min(xc + half + 1, nx)
+    y0, y1 = max(yc - half, 0), min(yc + half + 1, ny)
+    return xc, yc, x0, x1, y0, y1, nx, ny
+
+
+def _read_cutout_remote(url: str, exp: Exposure, ra: float, dec: float, half: int) -> Cutout | None:
+    reader = _read_square_fits if USE_FLAGS else _read_square_ranges
+    hdr, data, flags, (xc, yc, x0, y0, nx, ny) = reader(url, ra, dec, half)
+    if data is None:
+        return None  # the square doesn't overlap this detector
 
     flags_near = 0
     if flags is not None:

@@ -66,7 +66,7 @@ def getImages(uuid):
         time.sleep(1)
 
     Images = []
-    for filename in os.listdir(PATH):
+    for filename in sorted(os.listdir(PATH)):
         if filename.endswith(".jpg"):
             Images.append(f"{PATH}/{filename}")
     return Images
