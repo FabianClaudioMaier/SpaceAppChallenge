@@ -1,14 +1,28 @@
 from datetime import datetime
 from io import BytesIO
 import os
+import subprocess
 import time
 from uuid import uuid4
 
 
-def sendToBackend(DEC, RA, PIXELS, MS):
+def main(DEC, RA, PIXELS, interval=500):
     '''
-    Creates a uuid for the submitted coordinates and settings.
-    The backend process is not connected yet.
+    Main function to test the middleware functions.
+    '''
+
+    uuid = sendToBackend(DEC, RA, PIXELS)
+    Images = getImages(uuid)
+    Video = convertToVideo(Images, interval=interval)
+    video_id = sendToFrontend(Video, uuid)
+    print(f"Video ID: {video_id}")
+
+
+def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
+    '''
+    Creates a uuid.
+    Starts the backend process in a shell script with the given DEC and RA coordinates, PIXELS, and uuid. 
+    The backend process will generate images based on these coordinates. 
 
     Parameters:
     DEC: Declination coordinate in degrees
@@ -18,7 +32,11 @@ def sendToBackend(DEC, RA, PIXELS, MS):
 
     Output: uuid for this submission
     '''
-    return str(uuid4())
+    uuid = str(uuid4())
+
+    shell_command = f"python3 {BACKEND_PATH} {DEC} {RA} {PIXELS} {uuid}"
+    subprocess.run(shell_command, shell=True, check=True)
+    return uuid
 
 
 def getImages(uuid):
@@ -31,16 +49,27 @@ def getImages(uuid):
 
     Output: list of images in jpg format
     '''
-    pass
+    PATH= f"../python-backend/Cache/usr/{uuid}"
+
+    while not os.path.exists(PATH) or not os.listdir(PATH):
+        time.sleep(1)
+
+    Images = []
+    for filename in os.listdir(PATH):
+        if filename.endswith(".jpg"):
+            Images.append(f"{PATH}/{filename}")
+
+    return Images
 
 
-def convertToVideo(Images, Timestamps=None):
+def convertToVideo(Images, Timestamps=None, interval=500):
     """
     Converts images into a GIF, sorting by timestamps when provided.
 
     Parameters:
     Images: List of JPG image paths.
     Timestamps: Optional timestamps corresponding to Images in UTC format.
+    interval: Duration in milliseconds for each frame in the GIF (default: 500ms).
 
     Output: GIF image as bytes.
     """
@@ -93,7 +122,7 @@ def convertToVideo(Images, Timestamps=None):
             format='GIF',
             save_all=True,
             append_images=frames[1:],
-            duration=500,
+            duration=interval,
             loop=0,
         )
         return output.getvalue()
@@ -104,54 +133,21 @@ def convertToVideo(Images, Timestamps=None):
 
 
 
-def sendToFrontend(Video, uuid=None):
+def sendToFrontend(Video, uuid):
     '''
     Saves the video in gif format to the video_cache folder and returns the video_id
 
     Parameters:
     Video: video in gif format
-    uuid: optional uuid of the process
-    '''
+    uuid: uuid of the process
 
-    if uuid is None:
-        uuid = str(uuid4())
+    Output: uuid of the process, which can be used to retrieve the video from the video_cache
+    '''
 
     os.makedirs("video_cache", exist_ok=True)
 
-    '''
-    Output: video_id of the video
-    '''
     video_path = os.path.join("video_cache", f"{uuid}.gif")
     with open(video_path, "wb") as f:
         f.write(Video)
-    return uuid
-
-
-def clean_cache(CACHE_FOLDER="video_cache", MAX_AGE=30 * 60):
-
-    '''
-    Cleans the video cache folder by deleting files older than MAX_AGE seconds.
-
-    Parameters:
-    CACHE_FOLDER: The folder where cached videos are stored (default: "video_cache")
-    MAX_AGE: The maximum age of files in seconds before they are deleted (default: 30 minutes)
-    
-    Output: None
-    '''
-
-    current_time = time.time()
-
-    for filename in os.listdir(CACHE_FOLDER):
-
-        filepath = os.path.join(CACHE_FOLDER, filename)
-
-        if not os.path.isfile(filepath):
-            continue
-
-        file_age = current_time - os.path.getmtime(filepath)
-
-        if file_age > MAX_AGE:
-            os.remove(filepath)
-            print(f"Deleted old video: {filename}")
-    pass
+    return uuid # should send the video_id to the frontend, but for now we just return the uuid
 
