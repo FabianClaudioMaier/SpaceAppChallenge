@@ -6,3 +6,4 @@ pillow
 requests
 fsspec
 aiohttp
+matplotlib
