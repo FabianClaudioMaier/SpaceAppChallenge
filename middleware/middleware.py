@@ -1,5 +1,6 @@
 from datetime import datetime
 from io import BytesIO
+import json
 import os
 import subprocess
 import sys
@@ -7,6 +8,19 @@ import time
 from pathlib import Path
 from uuid import uuid4
 import shutil
+
+
+class BackendError(Exception):
+    '''
+    The backend ran but reported an error (exit code 1-5). str(error) is the
+    backend's own explanation, meant for the user; exit_code says what kind:
+    1 invalid input, 2 no SPHEREx images for that position,
+    3 archive unreachable, 4 unexpected, 5 output folder already exists.
+    '''
+
+    def __init__(self, message, exit_code):
+        super().__init__(message)
+        self.exit_code = exit_code
 
 
 def main(DEC, RA, PIXELS, interval):
@@ -20,10 +34,13 @@ def main(DEC, RA, PIXELS, interval):
     interval: Duration in milliseconds for each frame in the GIF
     '''
 
-    uuid = sendToBackend(DEC, RA, PIXELS)
-    Images = getImages(uuid)
-    Video = convertToVideo(Images, interval)
-    shutil.rmtree(f"../python-backend/Cache/usr/{uuid}")  # Remove the uuid folder after collecting the images
+    uuid = sendToBackend(DEC, RA, PIXELS)  # raises BackendError if the backend failed
+    try:
+        Images = getImages(uuid)
+        Video = convertToVideo(Images, interval)
+    finally:
+        # Remove the uuid folder after collecting the images - also when that failed
+        shutil.rmtree(f"../python-backend/Cache/usr/{uuid}", ignore_errors=True)
     video_id = sendToFrontend(Video, uuid)
     return video_id
 
@@ -40,14 +57,43 @@ def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
     PIXELS: Number of pixels to generate
 
     Output: uuid for this submission
+    Raises BackendError (with the backend's explanation) if the backend failed.
     '''
     uuid = str(uuid4())
 
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, BACKEND_PATH, DEC, RA, str(PIXELS), uuid],
-        check=True,
+        stderr=subprocess.PIPE,  # the backend writes its log and error message here
+        text=True,
     )
+    sys.stderr.write(result.stderr)  # keep the backend's log visible in the server console
+
+    if result.returncode != 0:
+        message = _backendErrorMessage(uuid, result.stderr, result.returncode)
+        # On an error the backend still hands over Cache/usr/<uuid> (with meta.json) - remove it
+        shutil.rmtree(f"../python-backend/Cache/usr/{uuid}", ignore_errors=True)
+        raise BackendError(message, result.returncode)
     return uuid
+
+
+def _backendErrorMessage(uuid, stderr, returncode):
+    '''
+    The backend's explanation of what went wrong: meta.json["error"] if the
+    backend got as far as writing its folder, else its last "error: ..." line
+    on stderr (e.g. for invalid arguments, where no folder is created).
+    '''
+    try:
+        with open(f"../python-backend/Cache/usr/{uuid}/meta.json") as f:
+            error = json.load(f).get("error")
+        if error:
+            return error
+    except (OSError, ValueError):
+        pass
+
+    errors = [line.removeprefix("error: ") for line in stderr.splitlines() if line.startswith("error: ")]
+    if errors:
+        return errors[-1]
+    return f"Backend failed with exit code {returncode}"
 
 
 def getImages(uuid):
