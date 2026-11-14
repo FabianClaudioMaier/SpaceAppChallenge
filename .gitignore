@@ -1,0 +1,29 @@
+# ---- Python --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# ---- Generated data (can be hundreds of MB, rebuilt on demand) -----------
+# Backend: downloaded SPHEREx squares, archive query results and the
+# per-user output folders in Cache/usr. Keep only the placeholder so the
+# folder exists in a fresh clone.
+python-backend/Cache/*
+!python-backend/Cache/placeholder
+
+# Middleware: rendered GIFs (written to video_cache/ next to wherever the
+# server was started, so ignore it everywhere)
+video_cache/
+
+# ---- Editors / OS ----------------------------------------------------------
+tempCodeRunnerFile.*
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Logs ------------------------------------------------------------------
+*.log
