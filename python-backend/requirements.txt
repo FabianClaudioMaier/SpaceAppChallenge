@@ -1,0 +1,8 @@
+astropy>=7.0
+astroquery>=0.4.10
+numpy
+scipy
+pillow
+requests
+fsspec
+aiohttp
