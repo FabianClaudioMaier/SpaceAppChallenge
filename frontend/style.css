@@ -1,7 +1,3 @@
-:root {
-  --submit-offset: 280px;
-}
-
   body {
   /* No scrolling when everything fits: without these the form's 110 px top
      margin leaked through body (margin collapsing), so body started 110 px down
@@ -22,7 +18,7 @@ p {
   font-size: 20px;
 }
 
-#submit-button {left: var(--submit-offset);
+#submit-button {
   border-radius: 12px;
   padding: 12px 28px;
   font-size: 20px;
@@ -33,12 +29,15 @@ color: white;}
 #lname {
   transform: translateY(10px) scale(1.25);
 }
+/* Top right: on normal screens in the window corner; on very wide ones it
+   stops at the right edge of the content (max 1240 px wide, centred), so it
+   doesn't drift far away from it. Was positioned from the window centre
+   (+430 px), which cut it off in windows narrower than ~1160 px. */
 .settings {
   position: fixed;
   top: 16px;
-  left: calc(50% + var(--submit-offset) + 150px);
-  transform: translateX(-50%);
-  width: 300px;
+  right: max(16px, calc(50% - 620px));
+  width: min(300px, calc(100vw - 32px));
   z-index: 100;
   font-family: "DM Sans", sans-serif;
 }
@@ -46,7 +45,7 @@ color: white;}
 #settings-button {
   background: #575a5e;
   display: block;
-  margin: 0 auto;
+  margin: 0 0 0 auto; /* flush right, the panel opens below it */
   min-width: 220px;
   padding: 16px 28px;
   border: 0;
@@ -413,9 +412,6 @@ color: white;}
     gap: 12px;
   }
 
-  .settings {
-    right: 16px;
-  }
 }
 
 @media (max-width: 900px) {
