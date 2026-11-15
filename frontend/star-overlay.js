@@ -24,10 +24,10 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const STAR_MARKER_PX = 6;  // marker radius on screen, whatever the frame size
 const STAR_LABEL_PX = 11;  // font size of the fast movers' names on screen
 
-// Which catalogues are switched on (remembered, like "Show diffs")
+// Which catalogues are switched on: on unless switched off before (remembered, like "Show diffs")
 const starLayersOn = {};
 for (const [catalog, toggle] of Object.entries(starToggles)) {
-  starLayersOn[catalog] = localStorage.getItem(`showStars_${catalog}`) === "true";
+  starLayersOn[catalog] = localStorage.getItem(`showStars_${catalog}`) !== "false";
   toggle.setAttribute("aria-checked", String(starLayersOn[catalog]));
   toggle.addEventListener("click", () => {
     starLayersOn[catalog] = !starLayersOn[catalog];
