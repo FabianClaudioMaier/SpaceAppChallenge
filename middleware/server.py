@@ -70,16 +70,24 @@ class Handler(SimpleHTTPRequestHandler):
             super().do_HEAD()
 
     def do_POST(self):
-        if self.path != "/api/send-to-backend":
+        if self.path not in ("/api/send-to-backend", "/api/save"):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 4096:
+            max_length = 1_000_000 if self.path == "/api/save" else 4096
+            if not 0 < length <= max_length:
                 raise ValueError("Invalid request size")
 
             payload = json.loads(self.rfile.read(length))
+            if self.path == "/api/save":
+                if not isinstance(payload, dict):
+                    raise ValueError("Metadata must be a JSON object")
+                save(payload)
+                self.send_json(HTTPStatus.OK, {"saved": True})
+                return
+
             DEC = payload["DEC"]
             RA = payload["RA"]
             PIXELS = int(payload["PIXELS"])
@@ -111,7 +119,7 @@ class Handler(SimpleHTTPRequestHandler):
                            {"error": f"Internal error: {type(error).__name__}: {error}"})
             return
 
-        self.send_json(HTTPStatus.OK, {"uuid": uuid})
+        self.send_json(HTTPStatus.OK, {"uuid": uuid, "json": metadata})
 
 
 if __name__ == "__main__":

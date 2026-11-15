@@ -1064,9 +1064,18 @@ movingNoButton.addEventListener("click", () => {
 movingSaveButton.addEventListener("click", async () => {
   movingSaveButton.disabled = true;
   try {
-    const response = await fetch("/api/save", { method: "POST" });
+    const metadata = localStorage.getItem("videoMetadata");
+    if (!metadata) {
+      throw new Error("No video metadata available to save");
+    }
+    const response = await fetch("/api/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: metadata,
+    });
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      const result = await response.json().catch(() => null);
+      throw new Error(result?.error ?? `HTTP ${response.status}`);
     }
     movingSaveButton.hidden = true;
   } catch (error) {
