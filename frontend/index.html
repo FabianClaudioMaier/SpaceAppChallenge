@@ -12,6 +12,7 @@
     />
     <link rel="stylesheet" href="style.css" />
     <script src="app.js" defer></script>
+    <script src="star-overlay.js" defer></script>
   </head>
   <body><div class="settings">
   <button id="settings-button" type="button" aria-controls="settings-panel" aria-expanded="false">⚙ Settings</button>
@@ -28,6 +29,18 @@
        <span class="toggle-knob" aria-hidden="true"></span>
      </button>
      <span>Show diffs</span>
+   </div>
+   <div class="setting-row">
+     <button id="show-gaia" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Show Gaia stars">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>Gaia stars <span class="star-legend star-legend-gaia" aria-hidden="true"></span></span>
+   </div>
+   <div class="setting-row">
+     <button id="show-catwise" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Show WISE sources">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>WISE sources <span class="star-legend star-legend-wise" aria-hidden="true"></span></span>
    </div>
    <div class="setting-row globe-mode-setting">
      <button id="click-select-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
@@ -88,6 +101,7 @@
             height="333"
             draggable="false"
           />          <canvas id="paused-frame" hidden></canvas>
+          <svg id="star-overlay" aria-label="Known stars" hidden></svg>
           <div id="throbber" class="throbber" hidden>
             <span class="spinner" aria-hidden="true"></span>
             <span id="throbber-text" role="status">Working…</span>
@@ -104,7 +118,8 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
           </button>
         </div>
-        </div>  
+        <div id="star-info" class="star-info" aria-live="polite" hidden></div>
+        </div>
            <div class="movement-question">
           <p>Is something moving?</p>
           <button id="moving-yes" type="button">Yes</button>
