@@ -2,6 +2,10 @@ const settingsButton = document.querySelector("#settings-button");
 const settingsPanel = document.querySelector("#settings-panel");
 const invertButton = document.querySelector("#invert-pixel");
 const diffButton = document.querySelector("#show-diff");
+const contrastInput = document.querySelector("#contrast");
+const contrastValue = document.querySelector("#contrast-value");
+const brightnessInput = document.querySelector("#brightness");
+const brightnessValue = document.querySelector("#brightness-value");
 const speedInput = document.querySelector("#speed");
 const speedValue = document.querySelector("#speed-value");
 const image = document.querySelector("#result-image");
@@ -13,6 +17,7 @@ const zoomView = document.querySelector("#zoom-view");
 const zoomImage = document.querySelector("#zoom-image");
 const zoomFrame = document.querySelector("#zoom-frame");
 const zoomClose = document.querySelector("#zoom-close");
+const zoomBoxOverlay = document.querySelector("#zoom-box-overlay");
 const clickSelectToggle = document.querySelector("#click-select-toggle");
 const pinArrowToggle = document.querySelector("#pin-arrow-toggle");
 const applyGlobeCoordinatesButton = document.querySelector("#apply-globe-coordinates");
@@ -171,7 +176,9 @@ function greenwichMeanSiderealDegrees(date) {
 function createGlobeProjection(width, height) {
   const centerX = width / 2;
   const centerY = height / 2;
-  const radius = Math.min(width * 0.29, height * 0.4);
+  // (the sphere fills the panel; 0.1 x the width is left on each side for the
+  // target arrow, which reaches 1.08 x the radius, and the NCP / SCP labels)
+  const radius = Math.min(width * 0.4, height * 0.4);
   const yawCos = Math.cos(globeYaw);
   const yawSin = Math.sin(globeYaw);
   const pitchCos = Math.cos(globePitch);
@@ -598,6 +605,14 @@ pinArrowToggle.addEventListener("click", () => {
 
 applyGlobeCoordinatesButton.addEventListener("click", applyPinnedGlobePoint);
 
+// (i) under the globe: shows / hides its legend, explanation and credit
+const globeInfoToggle = document.querySelector("#globe-info-toggle");
+const globeInfo = document.querySelector("#globe-info");
+globeInfoToggle.addEventListener("click", () => {
+  globeInfo.hidden = !globeInfo.hidden;
+  globeInfoToggle.setAttribute("aria-expanded", String(!globeInfo.hidden));
+});
+
 coordinateGlobe.addEventListener("pointerdown", (event) => {
   if (globeInteractionMode === "click-select") return;
   globeDrag = { x: event.clientX, y: event.clientY };
@@ -764,6 +779,7 @@ declinationInput.addEventListener("input", () => {
 });
 
 const MAX_TRANSIENT_RETRIES = 3;
+let jobMetadataInMemory = null; // { uuid, metadata } of the job submitted in this page (see requestVideoUuid)
 const MAX_RETRY_DELAY_MS = 30_000;
 
 function retryDelayMs(response, retry) {
@@ -823,8 +839,18 @@ async function requestVideoUuid() {
       if (result.json === null || typeof result.json !== "object" || Array.isArray(result.json)) {
         throw new Error("Middleware returned invalid JSON metadata");
       }
-      localStorage.setItem("videoMetadata", JSON.stringify(result.json));
+      // Kept for the overlays, rulers and Save, also after a reload. Thousands of
+      // stars may not fit into localStorage: then they are kept in memory only
+      // (after a reload the job has no star overlays) - see shownMetadata.
+      jobMetadataInMemory = { uuid: result.uuid, metadata: result.json };
+      try {
+        localStorage.setItem("videoMetadata", JSON.stringify(result.json));
+      } catch (error) {
+        console.warn("Job metadata too big for localStorage, storing it without the star overlays:", error);
+        localStorage.setItem("videoMetadata", JSON.stringify({ ...result.json, overlays: null }));
+      }
     } else {
+      jobMetadataInMemory = null;
       localStorage.removeItem("videoMetadata");
     }
     return result.uuid;
@@ -918,11 +944,30 @@ settingsButton.addEventListener("click", () => {
   settingsButton.setAttribute("aria-expanded", "false");
 });
 
+// "Invert GIF", contrast and brightness as one CSS filter on everything that
+// shows a frame (view only: the GIF itself and the saved GIFs are unchanged).
+// contrast() pivots at 50 % grey, which in the difference images is "no change".
+function applyImageFilter() {
+  const invert = invertButton.getAttribute("aria-checked") === "true";
+  const filter = `${invert ? "invert(1) " : ""}contrast(${contrastInput.value}%) brightness(${brightnessInput.value}%)`;
+  for (const element of [image, pausedFrame, zoomImage, zoomFrame]) element.style.filter = filter;
+}
+
 invertButton.addEventListener("click", () => {
-  const isOn = invertButton.getAttribute("aria-checked") === "true";
-  invertButton.setAttribute("aria-checked", String(!isOn));
-  image.style.filter = isOn ? "none" : "invert(1)";  pausedFrame.style.filter = image.style.filter;
+  invertButton.setAttribute("aria-checked", String(invertButton.getAttribute("aria-checked") !== "true"));
+  applyImageFilter();
 });
+
+for (const [input, output, key] of [[contrastInput, contrastValue, "contrast"], [brightnessInput, brightnessValue, "brightness"]]) {
+  input.value = localStorage.getItem(key) ?? input.value;
+  output.textContent = `${input.value} %`;
+  input.addEventListener("input", () => {
+    output.textContent = `${input.value} %`;
+    localStorage.setItem(key, input.value);
+    applyImageFilter();
+  });
+}
+applyImageFilter();
 
 // Switches the shown GIF; "Invert GIF" is a filter on the image itself,
 // so it applies to both.
@@ -958,8 +1003,9 @@ function openZoom(region, imageRect) {
   const width = image.clientWidth;
   const height = image.clientHeight;
 
-  const availableWidth = Math.min(window.innerWidth - 32, 1000);
-  const availableHeight = Math.min(window.innerHeight - 64, 800);
+  // (minus the rulers left of and above the zoomed image, see viewer.js)
+  const availableWidth = Math.min(window.innerWidth - 32, 1000) - ZOOM_RULER_LEFT_PX;
+  const availableHeight = Math.min(window.innerHeight - 64, 800) - ZOOM_RULER_TOP_PX;
   const scale = Math.min(availableWidth / region.width, availableHeight / region.height);
 
   zoomView.style.width = `${Math.round(region.width * scale)}px`;
@@ -972,7 +1018,7 @@ function openZoom(region, imageRect) {
   zoomFrame.hidden = !framesReady;
   zoomImage.hidden = framesReady;
   if (!framesReady) zoomImage.src = pausedFrame.hidden ? image.currentSrc || image.src : pausedFrame.toDataURL();
-  for (const element of [zoomImage, zoomFrame, zoomStarOverlay]) {
+  for (const element of [zoomImage, zoomFrame, zoomStarOverlay, zoomBoxOverlay]) {
     element.style.width = `${width * scale}px`;
     element.style.height = `${height * scale}px`;
     element.style.left = `${(left - region.left) * scale}px`;
@@ -981,12 +1027,21 @@ function openZoom(region, imageRect) {
   zoomImage.style.filter = image.style.filter;
   zoomFrame.style.filter = image.style.filter; // keep "Invert GIF"
   zoomFrameShown = null;
+  // The zoomed part in GIF pixels: for the zoom's rulers and box (viewer.js)
+  const gifPerScreen = image.naturalWidth / width;
+  zoomRegion = {
+    x0: (region.left - left) * gifPerScreen,
+    y0: (region.top - top) * gifPerScreen,
+    x1: (region.left + region.width - left) * gifPerScreen,
+    y1: (region.top + region.height - top) * gifPerScreen,
+  };
   buildZoomStarOverlay((width * scale) / image.naturalWidth); // screen px per GIF px in the zoom (star-overlay.js)
   zoomDialog.showModal();
   requestAnimationFrame(zoomTick);
 }
 
 let zoomFrameShown = null;
+let zoomRegion = null; // the zoomed part of the frame in GIF pixels (set by openZoom)
 // While the zoom is open, its frame and its star markers follow the frame on screen
 function zoomTick() {
   if (!zoomDialog.open) return;
@@ -1003,7 +1058,9 @@ function zoomTick() {
 }
 
 image.addEventListener("pointerdown", (event) => {
+  if (activeTool === "pointer") return; // the pointer tool: clicks only pick stars
   if (activePointerId !== null || !image.naturalWidth) return;
+  zoomSelection.classList.toggle("box-selection", activeTool === "box");
 
   activePointerId = event.pointerId;
   selectionStart = {
@@ -1048,6 +1105,11 @@ image.addEventListener("pointerup", (event) => {
   const width = Math.abs(endX - x);
   const height = Math.abs(endY - y);
 
+  if (activeTool === "box") { // a click without dragging marks nothing
+    if (width >= 3 && height >= 3) markBoxOnScreen(Math.min(x, endX), Math.min(y, endY), width, height, rect);
+    return;
+  }
+
   if (width >= 8 && height >= 8) {
     openZoom({
       left: Math.min(x, endX),
@@ -1087,45 +1149,6 @@ zoomDialog.addEventListener("click", (event) => {
     zoomDialog.close();
   }
 });
-movingYesButton.addEventListener("click", () => {
-  movingSaveButton.hidden = false;   // Yes → Save anzeigen
-});
-
-movingNoButton.addEventListener("click", () => {
-  movingSaveButton.hidden = true;    // No → Save wieder verstecken
-});
-
-movingSaveButton.addEventListener("click", async () => {
-  movingSaveButton.disabled = true;
-  try {
-    /* Normal metadata source, to restore after the temporary file workaround:
-    const metadata = localStorage.getItem("videoMetadata");
-    if (!metadata) {
-      throw new Error("No video metadata available to save");
-    }
-    */
-    const metadataResponse = await fetch("/example_meta_barnard.json", { cache: "no-store" });
-    if (!metadataResponse.ok) {
-      throw new Error(`Could not load example metadata: HTTP ${metadataResponse.status}`);
-    }
-    const metadata = await metadataResponse.text();
-    const response = await fetch("/api/save", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: metadata,
-    });
-    if (!response.ok) {
-      const result = await response.json().catch(() => null);
-      throw new Error(result?.error ?? `HTTP ${response.status}`);
-    }
-    movingSaveButton.hidden = true;
-  } catch (error) {
-    console.error("Saving failed:", error);
-    alert(`Saving failed: ${error.message}`);
-  } finally {
-    movingSaveButton.disabled = false;
-  }
-});
 // Stop/Play: an <img> can't pause a GIF. So stopping splits the GIF into its
 // frames (ImageDecoder) and shows the current one on a canvas over the GIF;
 // playing on then runs the frames on that canvas, from where it stopped.
@@ -1152,9 +1175,20 @@ image.addEventListener("load", () => {
   showPaused(false);
 });
 
-async function loadGifFrames() {
+let gifFramesLoading = null; // { src, promise } of the decoding under way
+
+function loadGifFrames() {
   const src = image.currentSrc || image.src;
-  if (src === gifFramesSrc) return; // already split
+  if (src === gifFramesSrc) return Promise.resolve(); // already split
+  if (gifFramesLoading?.src !== src) {
+    const promise = decodeGifFrames(src);
+    gifFramesLoading = { src, promise };
+    promise.catch(() => { if (gifFramesLoading?.promise === promise) gifFramesLoading = null; });
+  }
+  return gifFramesLoading.promise;
+}
+
+async function decodeGifFrames(src) {
   const data = await (await fetch(src)).arrayBuffer();
   const decoder = new ImageDecoder({ data, type: "image/gif" });
   await decoder.tracks.ready;
@@ -1167,6 +1201,7 @@ async function loadGifFrames() {
     });
     frame.close();
   }
+  if (src !== (image.currentSrc || image.src)) return; // another GIF meanwhile: these are stale
   gifFrames = frames;
   gifFramesSrc = src;
 }

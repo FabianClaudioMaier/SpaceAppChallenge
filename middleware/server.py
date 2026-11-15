@@ -12,15 +12,55 @@ from uuid import UUID
 
 import traceback
 
-from middleware import BackendError, main, save
+from middleware import BackendError, catalogLayer, catalogList, downloadCSV, main, save
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 VIDEO_CACHE_DIR = Path(__file__).resolve().parent / "video_cache"
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # Set in __main__ from the port: the only Host headers answered.
+    # Other pages open in the same browser can't use this server:
+    #  - DNS rebinding (a foreign domain pointed at 127.0.0.1) sends a foreign Host
+    #  - a POST from a foreign page carries its Origin, and can't send
+    #    Content-Type: application/json without the browser asking first (CORS),
+    #    which this server never allows
+    allowed_hosts = set()
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(FRONTEND_DIR), **kwargs)
+
+    def host_ok(self):
+        if self.headers.get("Host") in self.allowed_hosts:
+            return True
+        self.send_error(HTTPStatus.FORBIDDEN, "Unknown Host")
+        return False
+
+    def post_ok(self):
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in {f"http://{host}" for host in self.allowed_hosts}:
+            self.send_error(HTTPStatus.FORBIDDEN, "Foreign Origin")
+            return False
+        if self.headers.get_content_type() != "application/json":
+            self.send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Expected application/json")
+            return False
+        return True
+
+    def send_saves_csv(self):
+        if urlsplit(self.path).path != "/api/saves.csv":
+            return False
+        data = downloadCSV()
+        if data is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Nothing saved yet")
+            return True
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", 'attachment; filename="saves.csv"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+        return True
 
     def send_json(self, status, payload):
         body = json.dumps(payload).encode("utf-8")
@@ -62,30 +102,46 @@ class Handler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self):
-        if not self.send_video():
+        if not self.host_ok():
+            return
+        if urlsplit(self.path).path == "/api/catalogs":
+            self.send_json(HTTPStatus.OK, catalogList())
+            return
+        if not self.send_video() and not self.send_saves_csv():
             super().do_GET()
 
     def do_HEAD(self):
+        if not self.host_ok():
+            return
         if not self.send_video(head_only=True):
             super().do_HEAD()
 
     def do_POST(self):
-        if self.path not in ("/api/send-to-backend", "/api/save"):
+        if not self.host_ok() or not self.post_ok():
+            return
+        if self.path not in ("/api/send-to-backend", "/api/save", "/api/catalog"):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            max_length = 1_000_000 if self.path == "/api/save" else 4096
+            max_length = 65536 if self.path in ("/api/save", "/api/catalog") else 4096
             if not 0 < length <= max_length:
                 raise ValueError("Invalid request size")
 
             payload = json.loads(self.rfile.read(length))
             if self.path == "/api/save":
-                if not isinstance(payload, dict):
-                    raise ValueError("Metadata must be a JSON object")
-                save(payload)
-                self.send_json(HTTPStatus.OK, {"saved": True})
+                self.send_json(HTTPStatus.OK, save(payload))  # save() checks the request
+                return
+            if self.path == "/api/catalog":
+                try:
+                    layer = catalogLayer(payload)  # (checks the request)
+                except ValueError:
+                    raise
+                except Exception as error:  # catalogue servers unreachable etc.
+                    self.send_json(HTTPStatus.BAD_GATEWAY, {"error": f"{type(error).__name__}: {error}"})
+                    return
+                self.send_json(HTTPStatus.OK, layer)
                 return
 
             DEC = payload["DEC"]
@@ -95,7 +151,7 @@ class Handler(SimpleHTTPRequestHandler):
 
             if not isinstance(DEC, str) or not isinstance(RA, str):
                 raise ValueError("Coordinates must be strings")
-            if not 50 <= PIXELS <= 500 or not 25 <= MS <= 1000:
+            if not 50 <= PIXELS <= 1000 or not 25 <= MS <= 1000:
                 raise ValueError("Pixel Size or Speed is outside its allowed range")
 
             uuid, metadata = main(DEC, RA, PIXELS, MS)
@@ -124,5 +180,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5173
+    Handler.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     print(f"Serving frontend and middleware at http://127.0.0.1:{port}/", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

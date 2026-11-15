@@ -1,11 +1,17 @@
 """
-Star overlays: the brightest and the fastest-moving stars of a frame, from
-Gaia DR3 and CatWISE2020, placed on every frame at that frame's date.
+Star overlays: the known sources of a frame from Gaia DR3 and CatWISE2020 (all
+of them, up to MAX_STARS per catalogue), and SIMBAD's known fast movers.
 
-The images are never changed. Instead every catalogue position is moved from
+We're looking for something nobody has catalogued, which will most likely be
+faint - so the overlay is meant to explain as much of the frame as possible,
+not only its 50 brightest stars. The frontend filters what is shown (all /
+brightest / faintest, see star-overlay.js).
+
+The images are never changed. The frontend moves every catalogue position from
 the catalogue's epoch to each frame's date with the star's proper motion
-(Barnard's star: ~99" = 16 px between Gaia's 2016.0 and the 2025 frames), then
-turned into JPG pixel coordinates with the frame's own grid (make_grid_wcs).
+(Barnard's star: ~99" = 16 px between Gaia's 2016.0 and the 2025 frames) and
+turns it into JPG pixels with the frame's grid (make_grid_wcs) - per frame
+positions for thousands of stars would make meta.json megabytes big.
 
 Sources (all independent of IRSA, which also serves the SPHEREx images):
     VizieR    Gaia DR3 (I/355/gaiadr3) and CatWISE2020 (II/365/catwise),
@@ -17,7 +23,11 @@ Sources (all independent of IRSA, which also serves the SPHEREx images):
               0.27"/yr, really 8.1"/yr)
 
 Which stars:
-    bright    the N_BRIGHT brightest in the frame (Gaia: G, CatWISE: W1)
+    all       every source in the frame, up to MAX_STARS per catalogue in the
+              search circle (brightest first: Gaia by G, CatWISE by W1). At
+              250 px that is all of Gaia (~1300 in the frame) and CatWISE down
+              to W1 ~17; bigger frames stop at a brighter magnitude ("faintest"
+              in meta.json says where).
     fast      up to N_FAST with proper motion >= FAST_MAS_YR, however faint.
               CatWISE motions of faint sources are noisy and the glow of a
               bright star produces fake fast movers around it (at Barnard's star:
@@ -28,8 +38,8 @@ Which stars:
               far better motions - CatWISE adds what Gaia can't see (brown dwarfs).
 
 fetch() talks to the servers (cached, never expires: the catalogues don't
-change; Gaia/CatWISE files carry the row limit in their name, so a new N_BRIGHT
-fetches again), place() puts the stars on the frames (fast, no network).
+change; Gaia/CatWISE files carry the row limit in their name, so a new
+MAX_STARS fetches again), place() picks the stars in the frame (no network).
 """
 
 from __future__ import annotations
@@ -55,7 +65,7 @@ SIMBAD_HOSTS = ["https://simbad.cds.unistra.fr", "https://simbad.cfa.harvard.edu
 LINK_VIZIER = VIZIER_HOSTS[0]  # links for the user: the main site
 LINK_SIMBAD = SIMBAD_HOSTS[0]
 
-N_BRIGHT = 50               # brightest stars per catalogue in the frame
+MAX_STARS = 3000            # sources per catalogue, brightest first (see the docstring)
 N_FAST = 30                 # fast movers per catalogue in the frame
 FAST_MAS_YR = 200.0         # "fast" from this proper motion on
 CATWISE_MIN_PM_SIGMA = 10.0  # CatWISE fast movers: motion >= this many sigma
@@ -65,8 +75,15 @@ GLOW_MAX_MAG = 12.0         # (RP, or G if RP is missing) fainter: no glow worth
 MATCH_ARCSEC = 3.0          # CatWISE <-> Gaia: same star within this distance
 TWIN_ARCSEC = 10.0          # CatWISE lists some fast movers twice, a few " apart: show one
 MARGIN_ARCMIN = 2.0         # search beyond the frame: fast stars may move into it
-QUERY_ROWS = 2 * N_BRIGHT   # the search circle is ~2x the frame's area
+QUERY_ROWS = MAX_STARS      # (the search circle is ~2x the frame's area)
 ROW_LIMITED = ("gaia_dr3", "catwise2020")  # their "brightest" query stops at QUERY_ROWS
+SIMBAD_NAMES_PER_QUERY = 1000  # ids per SIMBAD name lookup (one query each, in parallel)
+# WISE contamination flags (CatWISE ccf, abf): per band, an upper-case letter marks
+# a source that is probably not real - D diffraction spike, H halo, O ghost (optical
+# reflection), P persistence; lower case = a real source, just contaminated.
+ARTIFACT_FLAGS = "DHOP"
+# Cache file versions: a change in what is stored per star needs a new file
+CACHE_FORMAT = {"catwise2020": "_flags"}
 OLD_QUERY_ROWS = 60         # cache files without "_r<rows>" in their name were fetched with this
 HEDGE_AFTER_S = 4.0         # no answer yet -> also ask the next host
 TIMEOUT_S = (5.0, 30.0)     # connect, read
@@ -87,6 +104,8 @@ CATALOGS = {
         "epoch_mjd": MJD_J2000 + 16.0 * DAYS_PER_YEAR,
         "mag_system": "Vega",
         "sort_mag": "G",
+        "vizier_link": "https://vizier.cds.unistra.fr/viz-bin/VizieR-5?-source=I/355/gaiadr3&Source=",
+        "id_prefix": "Gaia DR3 ",
     },
     "catwise2020": {
         "label": "CatWISE2020",
@@ -96,6 +115,8 @@ CATALOGS = {
         "epoch_mjd": 57170.0,  # ReadMe: RAPMdeg/DEPMdeg are at MJD 57170 (2015.4)
         "mag_system": "Vega",
         "sort_mag": "W1",
+        "vizier_link": "https://vizier.cds.unistra.fr/viz-bin/VizieR-5?-source=II/365/catwise&Name=",
+        "id_prefix": "CWISE ",
     },
     "simbad_movers": {
         "label": "Known fast movers (SIMBAD)",
@@ -104,7 +125,7 @@ CATALOGS = {
         "epoch_mjd": MJD_J2000,  # SIMBAD's positions are for J2000 (checked against Gaia DR3)
         "mag_system": "Vega",
         "sort_mag": "J",
-        "n_bright": 0,  # fast movers only, no "brightest N"
+        "fast_only": True,  # SIMBAD's list is only the fast movers
     },
 }
 
@@ -211,7 +232,12 @@ def _vizier(table: str, ra: float, dec: float, radius_arcmin: float, params: dic
 
 
 def _simbad_names(ids: list[str]) -> dict[str, tuple[str, str]]:
-    """{catalogue id: (SIMBAD main name, object type)} for the ids SIMBAD knows."""
+    """{catalogue id: (SIMBAD main name, object type)} for the ids SIMBAD knows.
+    Thousands of ids: SIMBAD_NAMES_PER_QUERY per query, the queries at once."""
+    if len(ids) > SIMBAD_NAMES_PER_QUERY:
+        n = SIMBAD_NAMES_PER_QUERY
+        parts = [_in_background(lambda part=ids[i:i + n]: _simbad_names(part)) for i in range(0, len(ids), n)]
+        return {k: v for f in parts for k, v in f.result().items()}
     if not ids:
         return {}
     listed = ", ".join("'" + i.replace("'", "''") + "'" for i in ids)
@@ -277,8 +303,10 @@ def _catwise_star(row: dict) -> dict | None:
         sigma = total / err if err > 0 else 0.0
     w1, w2 = _float(row.get("W1mproPM")), _float(row.get("W2mproPM"))
     name = row["Name"]
+    flags = (row.get("ccf") or "").strip()[:2] + (row.get("abf") or "").strip()  # W1, W2
     return {
         "id": f"CWISE {name}",
+        "artifact": any(c in ARTIFACT_FLAGS for c in flags),
         "ra": ra, "dec": dec,
         "pm_ra": None if pm_ra is None else pm_ra * 1000,  # -> mas/yr
         "pm_dec": None if pm_dec is None else pm_dec * 1000,
@@ -325,9 +353,9 @@ def _cache_name(ra: float, dec: float, pixels: int) -> str:
 
 
 def _cache_path(cache_dir: Path, catalog: str, ra: float, dec: float, pixels: int) -> Path:
-    """Gaia/CatWISE: QUERY_ROWS is part of the name, so after a change of N_BRIGHT
+    """Gaia/CatWISE: QUERY_ROWS is part of the name, so after a change of MAX_STARS
     the stars are fetched again instead of reusing an answer with fewer of them."""
-    rows = f"_r{QUERY_ROWS}" if catalog in ROW_LIMITED else ""
+    rows = f"_r{QUERY_ROWS}{CACHE_FORMAT.get(catalog, '')}" if catalog in ROW_LIMITED else ""
     return cache_dir / "catalogs" / catalog / f"{_cache_name(ra, dec, pixels)}{rows}.json"
 
 
@@ -529,54 +557,38 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
 # --------------------------------------------------------------------------- #
 # place: which stars are shown, and where on each frame (no network)
 # --------------------------------------------------------------------------- #
-def _links(star: dict) -> dict[str, str | None]:
-    if star.get("simbad_id"):
-        simbad = f"{LINK_SIMBAD}/simbad/sim-id?" + urllib.parse.urlencode({"Ident": star["simbad_id"]})
-    else:  # SIMBAD doesn't know it by name: search around its position
-        simbad = f"{LINK_SIMBAD}/simbad/sim-coo?" + urllib.parse.urlencode(
-            {"Coord": f"{star['ra']:.6f} {star['dec']:+.6f}", "Radius": "5", "Radius.unit": "arcsec"})
-    return {"simbad": simbad, "vizier": star["vizier"]}
-
-
-def _xy(star: dict, epoch_mjd: float, grid: WCS, pixels: int, frame_mjds: list[float]) -> list:
-    """[x, y] per frame in JPG pixels from the top left (None = outside the image)."""
-    pos = [_move(star, epoch_mjd, mjd) for mjd in frame_mjds]
+def _inside(stars: list[dict], epoch_mjd: float, grid: WCS, pixels: int,
+            frame_mjds: list[float]) -> list[bool]:
+    """Per star: is it inside the frame on at least one frame (at that frame's date)?"""
+    if not stars:
+        return []
+    pos = [_move(s, epoch_mjd, mjd) for s in stars for mjd in frame_mjds]
     x, y = grid.world_to_pixel_values(np.array([p[0] for p in pos]), np.array([p[1] for p in pos]))
-    out = []
-    for xi, yi in zip(x, y):
-        # FITS pixel i covers i-0.5..i+0.5, row 0 at the bottom; the JPG is flipped
-        # (see backend._save_jpg) and is measured from its top-left corner.
-        x_img, y_img = float(xi) + 0.5, (pixels - 1 - float(yi)) + 0.5
-        inside = 0 <= x_img <= pixels and 0 <= y_img <= pixels
-        out.append([round(x_img, 2), round(y_img, 2)] if inside else None)
-    return out
+    # FITS pixel i covers i-0.5..i+0.5
+    ok = (x >= -0.5) & (x <= pixels - 0.5) & (y >= -0.5) & (y <= pixels - 0.5)
+    return list(ok.reshape(len(stars), len(frame_mjds)).any(axis=1))
 
 
 def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
           frame_mjds: list[float]) -> dict[str, dict | None]:
-    """The "overlays" part of meta.json (see the module docstring)."""
+    """The "overlays" part of meta.json: per catalogue its sources in the frame
+    (brightest first), the fast movers marked (see the module docstring)."""
     result: dict[str, dict | None] = {}
     for name, info in CATALOGS.items():
         stars = catalogs.get(name)
         if stars is None:
             result[name] = None
             continue
-        shown = []
-        for s in stars:
-            xy = _xy(s, info["epoch_mjd"], grid, pixels, frame_mjds)
-            if any(p is not None for p in xy):
-                shown.append((s, xy))
+        shown = [s for s, ok in zip(stars, _inside(stars, info["epoch_mjd"], grid, pixels, frame_mjds)) if ok]
 
-        def mag(item) -> float:
-            m = item[0]["mag"][info["sort_mag"]]
+        def mag(s) -> float:
+            m = s["mag"][info["sort_mag"]]
             return m if m is not None else 99.0
 
-        bright = {id(s) for s, _ in sorted((i for i in shown if i[0]["mag"][info["sort_mag"]] is not None),
-                                          key=mag)[:info.get("n_bright", N_BRIGHT)]}
         fast_ids: list[int] = []
         fast_pos: list[tuple[float, float]] = []
-        for s, _ in sorted((i for i in shown if i[0]["fast_ok"] and _total_pm(i[0]) >= FAST_MAS_YR),
-                           key=lambda i: -_total_pm(i[0])):
+        for s in sorted((s for s in shown if s["fast_ok"] and _total_pm(s) >= FAST_MAS_YR),
+                        key=lambda s: -_total_pm(s)):
             if len(fast_ids) == N_FAST:
                 break
             if any(_separation_arcsec(s["ra"], s["dec"], ra, dec) < TWIN_ARCSEC for ra, dec in fast_pos):
@@ -585,17 +597,18 @@ def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
             fast_pos.append((s["ra"], s["dec"]))
         fast = set(fast_ids)
         out_stars = []
-        for s, xy in sorted(shown, key=mag):
-            reason = (["bright"] if id(s) in bright else []) + (["fast"] if id(s) in fast else [])
-            if not reason:
+        for s in sorted(shown, key=mag):
+            is_fast = id(s) in fast
+            if info.get("fast_only") and not is_fast:
                 continue
             pm = None if s["pm_ra"] is None or s["pm_dec"] is None else {
                 "ra": round(s["pm_ra"], 2), "dec": round(s["pm_dec"], 2), "total": round(_total_pm(s), 2)}
             entry = {
                 "id": s["id"],
                 "name": s.get("name"),
+                "simbad_id": s.get("simbad_id"),
                 "simbad_type": s.get("simbad_type"),
-                "reason": reason,
+                "reason": ["catalogue"] + (["fast"] if is_fast else []),
                 "ra": round(s["ra"], 6),
                 "dec": round(s["dec"], 6),
                 "mag": s["mag"],
@@ -603,16 +616,27 @@ def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
             }
             if "parallax_mas" in s:  # Gaia and SIMBAD
                 entry.update(parallax_mas=s["parallax_mas"], distance_ly=s["distance_ly"])
-            entry.update(links=_links(s), xy=xy)
+            if s.get("artifact"):  # (CatWISE; hidden by default in the frontend)
+                entry["artifact"] = True
             out_stars.append(entry)
-        n_bright = info.get("n_bright", N_BRIGHT)
+        # Did the query stop at QUERY_ROWS (then only the brightest came, down to "faintest")?
+        limited = name in ROW_LIMITED and len(stars) >= QUERY_ROWS
+        mags = [mag(s) for s in stars if mag(s) < 99]
+        faintest = round(max(mags), 2) if limited and mags else None
         result[name] = {
             "label": info["label"],
             "source": info["source"],
             "epoch": info["epoch"],
             "mag_system": info["mag_system"],
-            "selection": ((f"{n_bright} brightest ({info['sort_mag']}) in the frame + " if n_bright else "")
-                          + f"up to {N_FAST} with proper motion >= {FAST_MAS_YR:g} mas/yr"),
+            "sort_mag": info["sort_mag"],
+            "vizier_link": info.get("vizier_link"),  # + the id without id_prefix
+            "id_prefix": info.get("id_prefix"),
+            "faintest": faintest,
+            "has_artifacts": name == "catwise2020",
+            "selection": (f"up to {N_FAST} with proper motion >= {FAST_MAS_YR:g} mas/yr" if info.get("fast_only")
+                          else f"every source in the frame, {info['sort_mag']} down to {faintest:g} "
+                               f"(the {QUERY_ROWS} brightest)" if faintest is not None
+                          else "every source in the frame"),
             "stars": out_stars,
         }
     return result

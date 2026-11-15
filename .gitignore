@@ -29,3 +29,6 @@ Thumbs.db
 saves.csv
 # ---- Logs ------------------------------------------------------------------
 *.log
+
+# Saved findings (saves.csv + exported GIFs)
+middleware/saves/

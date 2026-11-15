@@ -13,8 +13,122 @@
     <link rel="stylesheet" href="style.css" />
     <script src="app.js" defer></script>
     <script src="star-overlay.js" defer></script>
+    <script src="layers.js" defer></script>
+    <script src="viewer.js" defer></script>
   </head>
-  <body><div class="settings">
+  <body>
+    <!-- Always the full-window layout: side panel (coordinates, layers) | viewer | settings + star info -->
+    <form id="coordinate-form" class="app-layout">
+      <aside class="side-panel">
+        <div class="coordinate-fields">
+          <label for="fname">
+            Right Ascension
+            <input
+              type="text"
+              id="fname"
+              name="fname"
+              placeholder="133.79° or 08:55:10.8"
+              autocomplete="off"
+              required
+            />
+            <span>Degrees or hours (h:m:s)</span>
+          </label>
+          <label for="lname">
+            Declination
+            <input
+              type="text"
+              id="lname"
+              name="lname"
+              placeholder="-7.245° or -07:14:42"
+              autocomplete="off"
+              required
+            />
+            <span>Degrees (decimal or d:m:s)</span>
+          </label>
+        </div>
+        <div class="submit-row"><button id="submit-button" type="submit">Submit</button></div>
+
+        <!-- Layers: which catalogues are drawn over the frame (layers.js) -->
+        <section class="layers" aria-labelledby="layers-heading">
+          <div class="layers-head">
+            <h2 id="layers-heading">Layers</h2>
+            <select id="layer-preset" aria-label="Preset">
+              <option value="custom" hidden>Custom</option>
+              <option value="discovery">Discovery (everything)</option>
+              <option value="stars">Stars only</option>
+              <option value="movers">Moving things</option>
+              <option value="none">Nothing</option>
+            </select>
+          </div>
+          <ul id="layer-list" class="layer-list"></ul>
+          <button id="layer-add-button" class="layer-add-button" type="button" aria-expanded="false"
+            aria-controls="layer-add-panel">+ Add catalogue…</button>
+          <div id="layer-add-panel" class="layer-add-panel" hidden>
+            <input id="layer-search" type="search" placeholder="Search: galaxies, radio, 2MASS…" aria-label="Search catalogues">
+            <ul id="layer-add-list" class="layer-add-list"></ul>
+          </div>
+        </section>
+      </aside>
+
+      <div class="viewer">
+        <div class="frame-stage">
+          <!-- white rulers (RA above, Dec left) + the frame, tools in the column on its right -->
+          <div class="ruler-frame rulers-off">
+            <svg class="ruler ruler-corner" aria-hidden="true"></svg>
+            <svg id="ruler-top" class="ruler ruler-top" aria-hidden="true"></svg>
+            <svg id="ruler-left" class="ruler ruler-left" aria-hidden="true"></svg>
+            <div class="result-frame" data-tool="pointer">
+              <img
+                id="result-image"
+                alt="Astronomy preview"
+                width="500"
+                height="500"
+                draggable="false"
+              />
+              <canvas id="paused-frame" hidden></canvas>
+              <svg id="star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg>
+              <svg id="box-overlay" class="box-overlay" aria-label="Marked box" hidden></svg>
+              <div id="throbber" class="throbber" hidden>
+                <span class="spinner" aria-hidden="true"></span>
+                <span id="throbber-text" role="status">Working…</span>
+              </div>
+            </div>
+            <div class="viewer-toolbar" role="toolbar" aria-label="Image tools" aria-orientation="vertical">
+              <button class="tool-button" type="button" data-tool="pointer" aria-pressed="true" aria-label="Pointer" data-tooltip="Pointer: click a star for details (V)">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5l12.5 9.2-5.6.9 3.2 6.1-2.6 1.4-3.2-6.2L6 18.6z" /></svg>
+              </button>
+              <button class="tool-button" type="button" data-tool="zoom" aria-pressed="false" aria-label="Zoom" data-tooltip="Zoom: click or drag (Z)">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" /><path d="M15 15l5.5 5.5M10.5 7.5v6M7.5 10.5h6" /></svg>
+              </button>
+              <button class="tool-button" type="button" data-tool="box" aria-pressed="false" aria-label="Mark a box" data-tooltip="Mark something: drag a box (B)">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="1" stroke-dasharray="3 2.4" /></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <p id="frame-time" class="frame-time"></p>
+        <div class="gif-controls">
+          <button id="prev-frame" type="button" aria-label="Previous frame" data-tooltip="Back to last image">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
+          </button><button id="play-pause-gif" type="button" aria-label="Stop" data-tooltip="Pause">
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          </button><button id="next-frame" type="button" aria-label="Next frame" data-tooltip="Skip to next image">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
+          </button>
+        </div>
+        <div class="movement-question">
+          <p>Is something moving?</p>
+          <button id="moving-yes" type="button" aria-pressed="false">Yes</button>
+          <button id="moving-no" type="button" aria-pressed="false">No</button>
+          <button id="moving-save" type="button" hidden>Save</button>
+        </div>
+        <p id="save-status" class="save-status" aria-live="polite"></p>
+      </div>
+
+      <aside class="right-panel">
+        <!-- Settings: on top of the right panel (opening it covers the globe, not the coordinates) -->
+<div class="settings">
   <button id="settings-button" type="button" aria-controls="settings-panel" aria-expanded="false">⚙ Settings</button>
 
   <div id="settings-panel" class="settings-panel" hidden>
@@ -29,24 +143,6 @@
        <span class="toggle-knob" aria-hidden="true"></span>
      </button>
      <span>Show diffs</span>
-   </div>
-   <div class="setting-row">
-     <button id="show-gaia" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show Gaia stars">
-       <span class="toggle-knob" aria-hidden="true"></span>
-     </button>
-     <span>Gaia stars <span class="star-legend star-legend-gaia" aria-hidden="true"></span></span>
-   </div>
-   <div class="setting-row">
-     <button id="show-catwise" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show WISE sources">
-       <span class="toggle-knob" aria-hidden="true"></span>
-     </button>
-     <span>WISE sources <span class="star-legend star-legend-wise" aria-hidden="true"></span></span>
-   </div>
-   <div class="setting-row">
-     <button id="show-movers" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show known fast movers">
-       <span class="toggle-knob" aria-hidden="true"></span>
-     </button>
-     <span>Fast movers <span class="star-legend star-legend-movers" aria-hidden="true"></span></span>
    </div>
    <div class="setting-row globe-mode-setting">
      <button id="click-select-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
@@ -64,110 +160,65 @@
     <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
 
+    <label for="contrast">Contrast <output id="contrast-value" for="contrast">100 %</output></label>
+    <input id="contrast" class="view-slider" type="range" min="50" max="400" step="10" value="100">
+    <label for="brightness">Brightness <output id="brightness-value" for="brightness">100 %</output></label>
+    <input id="brightness" class="view-slider" type="range" min="50" max="400" step="10" value="100">
+
         <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">250 px</output></label>
-<input id="pixel-size" type="range" min="50" max="500" step="1" value="250">
+<input id="pixel-size" type="range" min="50" max="1000" step="1" value="250">
 <button id="apply-settings" type="submit" form="coordinate-form">Apply</button>
+<a class="download-saves" href="/api/saves.csv" download="saves.csv">Download saves (CSV)</a>
   </div>
 </div>
-    <form id="coordinate-form" class="coordinate-form">
-      <div class="coordinate-fields">
-        <label for="fname">
-          Right Ascension
-          <input
-            type="text"
-            id="fname"
-            name="fname"
-            placeholder="133.79° or 08:55:10.8"
-            autocomplete="off"
-            required
-          />
-          <span>Degrees or hours (h:m:s)</span>
-        </label>
-        <label for="lname">
-          Declination
-          <input
-            type="text"
-            id="lname"
-            name="lname"
-            placeholder="-7.245° or -07:14:42"
-            autocomplete="off"
-            required
-          />
-          <span>Degrees (decimal or d:m:s)</span>
-        </label>
-      </div>
-
-      <div class="visualization-row">
-        <div class="result-column">
-          <div class="gif-area"><div class="result-frame">
-          <img
-            id="result-image"
-            alt="Astronomy preview"
-            width="500"
-            height="333"
-            draggable="false"
-          />          <canvas id="paused-frame" hidden></canvas>
-          <svg id="star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg>
-          <div id="throbber" class="throbber" hidden>
-            <span class="spinner" aria-hidden="true"></span>
-            <span id="throbber-text" role="status">Working…</span>
-          </div>
-        </div>
-        <div class="gif-controls">
-          <button id="prev-frame" type="button" aria-label="Previous frame" data-tooltip="Back to last image">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
-          </button><button id="play-pause-gif" type="button" aria-label="Stop" data-tooltip="Pause">
-            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
-            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-          </button>        
-          <button id="next-frame" type="button" aria-label="Next frame" data-tooltip="Skip to next image">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
-          </button>
-        </div>
+        <!-- details of a clicked star (star-overlay.js) -->
         <div id="star-info" class="star-info" aria-live="polite" hidden></div>
-        </div>
-           <div class="movement-question">
-          <p>Is something moving?</p>
-          <button id="moving-yes" type="button">Yes</button>
-          <button id="moving-no" type="button">No</button>
-          <button id="moving-save" type="button" hidden>Save</button>
-        </div>
-      </div>
-        <section class="celestial-globe-panel" aria-labelledby="globe-heading">
-          <div class="globe-top"><h1 id="globe-heading">Celestial pointing</h1>
+
+        <!-- The globe: hidden for now (a setting to show it may come later) -->
+        <section class="celestial-globe-panel" aria-labelledby="globe-heading" hidden>
+          <h1 id="globe-heading">Celestial pointing</h1>
           <canvas
             id="coordinate-globe"
-            width="560"
-            height="360"
+            width="500"
+            height="450"
             role="img"
             aria-label="Time-dependent Earth projection on a celestial sphere, with coordinate lines and the selected sky direction"
-          ></canvas>          </div>
+          ></canvas>
           <div class="globe-bottom">
-          <p class="globe-legend">Blue: celestial equator · Red: selected sky direction</p>
-          <p class="globe-disclaimer">
-            Approximate Earth projection: the marker shows where you’d stand to see the selected RA/Dec directly overhead at the current time.
-          </p>
-          <p class="earth-texture-credit">
-            Earth texture:
-            <a
-              href="https://github.com/mrdoob/three.js/tree/dev/examples/textures/planets"
-              target="_blank"
-              rel="noopener noreferrer"
-            >Three.js planet textures</a>
-          </p>
-          <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
-          <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>
+            <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
+            <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>
           </div>
-          <!-- right below the globe's text (still inside the form, so it submits it) -->
-          <div class="submit-row"><button id="submit-button" type="submit">Submit</button></div>
+          <div class="globe-info-row">
+            <button id="globe-info-toggle" class="info-button" type="button" aria-expanded="false"
+              aria-controls="globe-info" aria-label="About the globe" title="About the globe">i</button>
+          </div>
+          <div id="globe-info" class="globe-info" hidden>
+            <p class="globe-legend">Blue: celestial equator · Red: selected sky direction</p>
+            <p class="globe-disclaimer">
+              Approximate Earth projection: the marker shows where you’d stand to see the selected RA/Dec directly overhead at the current time.
+            </p>
+            <p class="earth-texture-credit">
+              Earth texture:
+              <a
+                href="https://github.com/mrdoob/three.js/tree/dev/examples/textures/planets"
+                target="_blank"
+                rel="noopener noreferrer"
+              >Three.js planet textures</a>
+            </p>
+          </div>
         </section>
-      </div>
+      </aside>
     </form>
 
 <div id="zoom-selection" hidden></div>
 <dialog id="zoom-dialog" aria-label="Zoomed image">
   <button id="zoom-close" type="button" aria-label="Close zoom">×</button>
-  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"><canvas id="zoom-frame" hidden></canvas><svg id="zoom-star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg></div>
+  <div class="zoom-ruler-frame">
+  <svg class="ruler ruler-corner" aria-hidden="true"></svg>
+  <svg id="zoom-ruler-top" class="ruler ruler-top" aria-hidden="true"></svg>
+  <svg id="zoom-ruler-left" class="ruler ruler-left" aria-hidden="true"></svg>
+  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"><canvas id="zoom-frame" hidden></canvas><svg id="zoom-star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg><svg id="zoom-box-overlay" class="box-overlay" aria-hidden="true" hidden></svg></div>
+  </div>
 </dialog>
 </body>
 </html>

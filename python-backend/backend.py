@@ -19,7 +19,9 @@ What happens:
     2. the frames are built into it (or, for a request identical to an earlier
        one, copied from Cache/results/ - see build_frames_cached):
          frame_000.jpg, frame_001.jpg, ...   oldest first, one per SPHEREx visit,
-                                             PIXELS wide, PIXELS high + a timestamp strip,
+                                             PIXELS x PIXELS, pixels only (the timestamp, rulers
+                                             etc. are drawn by the frontend; the middleware burns
+                                             them into exported GIFs, see middleware/export.py),
                                              colour (blue = D1-D3 0.75-2.4 um, red = D4-D6 2.4-5 um)
          diff/diff_000.jpg, ...              each frame minus the median of the frames taken
                                              with the same detectors (grey = unchanged,
@@ -91,7 +93,7 @@ from astropy.time import Time
 from astropy.visualization import AsinhStretch, ImageNormalize
 from astropy.wcs import WCS, FITSFixedWarning
 from astroquery.ipac.irsa import Irsa
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from scipy.ndimage import (binary_dilation, binary_fill_holes, find_objects, gaussian_filter,
                            label, map_coordinates, median_filter)
 
@@ -1330,6 +1332,10 @@ def fill_holes(img01: np.ndarray) -> np.ndarray:
 # visit - that is far below the sky, which then came out dark brown: R,G,B ~(32,17,3)
 # instead of ~(7,4,1); the red channel is the noisiest. This gives ~(8,4,1).)
 SKY_BLACK_SIGMAS = 1.0
+# Covered sky is lifted this much off pure black (0..1 display scale, 0.02 = 5 of
+# 255 grey levels): the black point above put the sky at ~(1..5, 1..3, 1), which
+# looked like "no data". Areas not covered by any image stay pure black.
+SKY_LIFT = 0.02
 
 
 def _shared_stretch(images: list[np.ndarray | None]) -> ImageNormalize:
@@ -1345,58 +1351,19 @@ def _shared_stretch(images: list[np.ndarray | None]) -> ImageNormalize:
     return ImageNormalize(vmin=vmin, vmax=vmax, stretch=AsinhStretch(0.1), clip=True)
 
 
-def _save_jpg(img01: np.ndarray, path: Path, label: str | None = None) -> None:
+def _save_jpg(img01: np.ndarray, path: Path) -> None:
     """(H, W) grey or (H, W, 3) colour values 0..1 -> JPG (FITS row 0 is the bottom).
 
-    label: written into a black strip added below the image (see _add_label_strip),
-    so it covers nothing of the image.
+    Pixels only, exactly the frame: timestamps and coordinate rulers are drawn by
+    the frontend, so they stay sharp at any size (and burned into exported GIFs
+    by middleware/export.py).
     """
     arr = (np.clip(img01, 0, 1) * 255).astype(np.uint8)
-    img = Image.fromarray(np.ascontiguousarray(np.flipud(arr)))
-    if label:
-        img = _add_label_strip(img, label)
-    img.save(path, quality=92)
+    Image.fromarray(np.ascontiguousarray(np.flipud(arr))).save(path, quality=92)
 
 
-def _add_label_strip(img: Image.Image, label: str) -> Image.Image:
-    """The image with a black strip below it holding the label in white.
-
-    The image itself is unchanged (same pixels, same x/y from the top left);
-    the result is just taller. Text sized to the frame width; if it doesn't
-    fit, only its first word (the date); if even that doesn't fit, no strip.
-    """
-    w, h = img.size
-    font = ImageFont.load_default(size=max(8, min(20, round(w / 20))))
-    pad = max(2, round(w / 85))  # 3 px around the text in a 255 px frame
-    measure = ImageDraw.Draw(img)
-    for text in (label, label.split()[0]):
-        left, top, right, bottom = measure.textbbox((0, 0), text, font=font)
-        if right - left + 2 * pad <= w:
-            break
-    else:
-        return img
-    black, white = (0, 255) if img.mode == "L" else ((0, 0, 0), (255, 255, 255))
-    out = Image.new(img.mode, (w, h + (bottom - top) + 2 * pad), black)
-    out.paste(img, (0, 0))
-    draw = ImageDraw.Draw(out)
-    # No anti-aliasing: the soft grey letter edges were mapped to the nearest
-    # colours of the GIF's 256-colour palette (made from the orange-brown sky)
-    # by the middleware, which tinted the text orange. Pure white stays white.
-    draw.fontmode = "1"
-    draw.text((pad - left, h + pad - top), text, font=font, fill=white)
-    return out
-
-
-def frame_label(meta: dict) -> str:
-    """Timestamp shown on a frame: when its images were taken (a visit takes minutes), UTC."""
-    return meta["timestamp"][:16].replace("T", " ") + " UTC"
-
-
-def render_frames(frames: list[dict], out_dir: Path, labels: list[str] | None = None) -> list[str]:
+def render_frames(frames: list[dict], out_dir: Path) -> list[str]:
     """Write frame_000.jpg ... (the frame size, no upscaling). Returns file names.
-
-    labels: per frame, its timestamp (see frame_label), in a black strip below
-    the image - the JPGs are that much taller than the frame.
 
     Colour like Backyard Worlds: red = D4-D6, blue = D1-D3, green = their
     average; each channel has its own brightness scale shared by all frames.
@@ -1417,9 +1384,10 @@ def render_frames(frames: list[dict], out_dir: Path, labels: list[str] | None = 
             img01 = np.stack([red, (red + blue) / 2, blue], axis=-1)
         else:
             img01 = fill_holes(np.asarray(stretch["all"](f["all"]), float))
-        img01 = np.nan_to_num(img01, nan=0.0)  # not covered by any image: black
+        covered = np.isfinite(img01)
+        img01 = np.where(covered, SKY_LIFT + (1 - SKY_LIFT) * img01, 0.0)  # not covered: black
         name = f"frame_{i:03d}.jpg"
-        _save_jpg(img01, out_dir / name, labels[i] if labels else None)
+        _save_jpg(img01, out_dir / name)
         names.append(name)
     return names
 
@@ -1465,8 +1433,7 @@ def _brightness_ratio(img: np.ndarray, reference: np.ndarray) -> float:
     return ratio if 0.2 < ratio < 5 else 1.0
 
 
-def render_differences(frames: list[dict], out_dir: Path, labels: list[str] | None = None,
-                       groups: list | None = None) -> list[str]:
+def render_differences(frames: list[dict], out_dir: Path, groups: list | None = None) -> list[str]:
     """Write diff/diff_000.jpg ...: each frame minus a reference image.
 
     Like Backyard Worlds' difference images: stars that don't change cancel to
@@ -1513,7 +1480,7 @@ def render_differences(frames: list[dict], out_dir: Path, labels: list[str] | No
     for i, d in enumerate(diffs):
         img01 = np.nan_to_num(0.5 + d / (2 * limit), nan=0.5)  # grey = no change
         name = f"diff/diff_{i:03d}.jpg"
-        _save_jpg(img01, out_dir / name, labels[i] if labels else None)
+        _save_jpg(img01, out_dir / name)
         names.append(name)
     return names
 
@@ -1708,9 +1675,8 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dic
                                f"{n_failed} images found but none could be downloaded - try again later")
         raise BackendError(EXIT_NO_DATA, f"no {collection} images cover RA={ra:.5f} Dec={dec:+.5f}")
 
-    labels = [frame_label(m) for m in frame_meta]
-    names = render_frames(frames, out_dir, labels)
-    diff_names = render_differences(frames, out_dir, labels, [tuple(m["detectors"]) for m in frame_meta])
+    names = render_frames(frames, out_dir)
+    diff_names = render_differences(frames, out_dir, [tuple(m["detectors"]) for m in frame_meta])
     for i, (meta, name) in enumerate(zip(frame_meta, names)):
         meta["image"] = name
         meta["difference_image"] = diff_names[i] if diff_names else None

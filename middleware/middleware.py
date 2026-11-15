@@ -1,14 +1,19 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 import json
+import math
 import os
+import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 import shutil
 import csv
+
+import export
 
 # Absolute paths (from this file's location), so it works no matter which
 # folder start.sh / server.py was started from. (Relative "../python-backend"
@@ -16,6 +21,12 @@ import csv
 # the backend wasn't found and the user got "Backend failed with exit code 2".)
 BACKEND_DIR = Path(__file__).resolve().parent.parent / "python-backend"
 USR_DIR = BACKEND_DIR / "Cache" / "usr"
+VIDEO_CACHE_DIR = Path(__file__).resolve().parent / "video_cache"
+
+# One backend job at a time: each one already uses every CPU core (16 worker
+# processes) and 64 download threads. Further requests wait for their turn.
+MAX_PARALLEL_JOBS = 1
+_job_slots = threading.BoundedSemaphore(MAX_PARALLEL_JOBS)
 
 
 class BackendError(Exception):
@@ -42,6 +53,11 @@ def main(DEC, RA, PIXELS, interval):
     interval: Duration in milliseconds for each frame in the GIF
     '''
 
+    with _job_slots:
+        return _runJob(DEC, RA, PIXELS, interval)
+
+
+def _runJob(DEC, RA, PIXELS, interval):
     uuid = sendToBackend(DEC, RA, PIXELS)  # raises BackendError if the backend failed
     try:
         Images, metadata = getImages(uuid)
@@ -213,52 +229,242 @@ def sendToFrontend(Video, uuid, suffix=""):
     Output: uuid of the process, which can be used to retrieve the video from the video_cache
     '''
 
-    video_cache_dir = Path(__file__).resolve().parent / "video_cache"
-    video_cache_dir.mkdir(parents=True, exist_ok=True)
+    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    video_path = video_cache_dir / f"{uuid}{suffix}.gif"
+    video_path = VIDEO_CACHE_DIR / f"{uuid}{suffix}.gif"
     with video_path.open("wb") as f:
         f.write(Video)
     return uuid # should send the video_id to the frontend, but for now we just return the uuid
 
 
-def save(metadata):
+# ---- Saved findings ---------------------------------------------------------
+# middleware/saves/saves.csv (one row per save) + the exported GIFs next to it
+# (see export.py), named after what was marked: <J-name>_<save time>.gif, e.g.
+# J220322.8-565122_20261115T191535Z.gif (+ _diff.gif).
+SAVES_DIR = Path(__file__).resolve().parent / "saves"
+SAVES_CSV = SAVES_DIR / "saves.csv"
+# (No job uuid: it only names one run of the backend and its GIFs, which are
+# deleted 30 minutes after last use. What rebuilds the frames is the field
+# (ra, dec, pixels) and the data releases they came from (collections).)
+SAVES_COLUMNS = [
+    "saved_utc", "verdict", "name", "ra", "dec", "pixels", "collections",
+    "x1", "y1", "x2", "y2",          # box corners (top left, bottom right), frame pixels
+    "ra1", "dec1", "ra2", "dec2",    # the same corners on the sky
+    "box_ra", "box_dec",             # box centre
+    "frame_shown", "frame_shown_utc",
+    "frame_utc",                     # every frame's timestamp, JSON list
+    "detectors",                     # every frame's detectors, JSON list
+    "view", "gif", "diff_gif",
+]
+VERDICTS = ("moving", "nothing")  # "Yes" (with or without a box) / "No"
+VIEWS = ("frames", "diff")
+_ISO_TIME = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?$")
+_COLLECTION = re.compile(r"^spherex_[a-z]+\d*$")  # IRSA collection names, e.g. spherex_dr1
+_save_lock = threading.Lock()  # the server is threaded: saves must not interleave
+
+
+def _number(value, name, low, high, whole=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    if not math.isfinite(value) or not low <= value <= high:
+        raise ValueError(f"{name} must be in [{low}, {high}]")
+    if whole and value != int(value):
+        raise ValueError(f"{name} must be a whole number")
+    return int(value) if whole else float(value)
+
+
+def validateSave(payload):
     '''
-    Writes the parameters to the saves.csv file for storage.
+    Checks a save request from the frontend and returns it cleaned up. Every
+    value that ends up in the CSV or a file name is a checked number, a
+    timestamp, or one of a few fixed words - nothing typed by a user (so a
+    spreadsheet opening saves.csv can't be made to run formulas).
 
     Parameters:
-    metadata: dictionary containing the parameters to be saved
+    payload: {uuid, ra, dec, pixels, collections: [...], verdict,
+              box: {x1, y1, x2, y2} | null, frame_shown: index | null, view,
+              frame_utc: [...], detectors: [...]}
+              (uuid: only to find the job's GIFs in the video cache for the export)
+
+    Output: the cleaned dictionary. Raises ValueError with the reason.
     '''
+    if not isinstance(payload, dict):
+        raise ValueError("Save request must be a JSON object")
+    entry = {
+        "uuid": str(UUID(str(payload.get("uuid")))),
+        "ra": _number(payload.get("ra"), "ra", 0, 360),
+        "dec": _number(payload.get("dec"), "dec", -90, 90),
+        "pixels": _number(payload.get("pixels"), "pixels", 3, 2040, whole=True),
+        "verdict": payload.get("verdict"),
+        "view": payload.get("view"),
+    }
+    if entry["verdict"] not in VERDICTS:
+        raise ValueError(f"verdict must be one of {VERDICTS}")
+    if entry["view"] not in VIEWS:
+        raise ValueError(f"view must be one of {VIEWS}")
+    collections = payload.get("collections")
+    if not isinstance(collections, list) or not 1 <= len(collections) <= 20 or \
+            not all(isinstance(c, str) and _COLLECTION.match(c) for c in collections):
+        raise ValueError("collections must be a list of SPHEREx collection names")
+    entry["collections"] = collections
 
-    detectors_by_frame = [frame["detectors"] for frame in metadata["frames"]]
-    row = [
-        metadata["dec"],
-        metadata["ra"],
-        json.dumps(detectors_by_frame),
-    ]
+    times = payload.get("frame_utc")
+    if not isinstance(times, list) or not 1 <= len(times) <= 200 or \
+            not all(isinstance(t, str) and _ISO_TIME.match(t) for t in times):
+        raise ValueError("frame_utc must be a list of ISO timestamps")
+    entry["frame_utc"] = times
+    detectors = payload.get("detectors")
+    if not isinstance(detectors, list) or len(detectors) != len(times) or not all(
+            isinstance(d, list) and all(isinstance(n, int) and 1 <= n <= 6 for n in d) for d in detectors):
+        raise ValueError("detectors must be one list of detector numbers per frame")
+    entry["detectors"] = detectors
+    shown = payload.get("frame_shown")
+    entry["frame_shown"] = None if shown is None else _number(shown, "frame_shown", 0, len(times) - 1, whole=True)
 
-    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "saves.csv"
+    box = payload.get("box")
+    if box is not None:
+        if entry["verdict"] != "moving":
+            raise ValueError("A box can only be saved with the verdict 'moving'")
+        if not isinstance(box, dict):
+            raise ValueError("box must be an object")
+        n = entry["pixels"]
+        box = {k: _number(box.get(k), k, 0, n, whole=True) for k in ("x1", "y1", "x2", "y2")}
+        if box["x1"] >= box["x2"] or box["y1"] >= box["y2"]:
+            raise ValueError("box needs x1 < x2 and y1 < y2")
+    entry["box"] = box
+    return entry
 
-    file_exists = RESULTS_CSV_PATH.exists()
 
-    with open(RESULTS_CSV_PATH, "a", newline="") as f:
-        writer = csv.writer(f)
+def _frameLabel(timestamp):
+    '''"2025-06-07T12:53:10.123" -> "2025-06-07 12:53 UTC" (as the frontend shows it)'''
+    return timestamp[:16].replace("T", " ") + " UTC"
 
-        if not file_exists:
-            writer.writerow(["DEC", "RA", "detectors"])
 
-        writer.writerow(row)
+def _openSavesCsv():
+    '''saves.csv for appending; a file with other columns (older version) is renamed first.'''
+    SAVES_DIR.mkdir(parents=True, exist_ok=True)
+    if SAVES_CSV.exists():
+        with open(SAVES_CSV, newline="") as f:
+            header = next(csv.reader(f), None)
+        if header != SAVES_COLUMNS:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            SAVES_CSV.rename(SAVES_DIR / f"saves_old_{stamp}.csv")
+    new = not SAVES_CSV.exists()
+    f = open(SAVES_CSV, "a", newline="")
+    if new:
+        csv.writer(f).writerow(SAVES_COLUMNS)
+    return f
+
+
+def save(payload):
+    '''
+    Saves a finding: one row in saves/saves.csv and, for "moving", the exported
+    GIFs (frames and difference images, 2x, with rulers, timestamps and the box,
+    see export.py) - as long as the job's GIFs are still in the video cache.
+
+    Parameters:
+    payload: the save request (see validateSave)
+
+    Output: {"saved": True, "name": ..., "gif": file name or None, "diff_gif": ...}
+    Raises ValueError if the request is invalid.
+    '''
+    e = validateSave(payload)
+    ra, dec, n, box = e["ra"], e["dec"], e["pixels"], e["box"]
+    now = datetime.now(timezone.utc)
+    corners = centre = (None, None)
+    if box:
+        corners = (export.frame_px_to_sky(box["x1"], box["y1"], ra, dec, n),
+                   export.frame_px_to_sky(box["x2"], box["y2"], ra, dec, n))
+        centre = export.frame_px_to_sky((box["x1"] + box["x2"]) / 2, (box["y1"] + box["y2"]) / 2, ra, dec, n)
+    name = export.j_name(*(centre if box else (ra, dec)))
+    labels = [_frameLabel(t) for t in e["frame_utc"]]
+
+    with _save_lock:
+        SAVES_DIR.mkdir(parents=True, exist_ok=True)
+        base = f"{name}_{now.strftime('%Y%m%dT%H%M%SZ')}"
+        k = 2
+        while (SAVES_DIR / f"{base}.gif").exists() or (SAVES_DIR / f"{base}_diff.gif").exists():
+            base = f"{name}_{now.strftime('%Y%m%dT%H%M%SZ')}_{k}"  # two saves in the same second
+            k += 1
+        gifs = {}
+        if e["verdict"] == "moving":
+            for suffix in ("", "_diff"):
+                source = VIDEO_CACHE_DIR / f"{e['uuid']}{suffix}.gif"
+                if source.exists():
+                    corners_px = (box["x1"], box["y1"], box["x2"], box["y2"]) if box else None
+                    data = export.export_gif(source.read_bytes(), ra, dec, n, labels, corners_px)
+                    (SAVES_DIR / f"{base}{suffix}.gif").write_bytes(data)
+                    gifs[suffix] = f"{base}{suffix}.gif"
+
+        fmt = lambda v, digits=6: "" if v is None else f"{v:.{digits}f}"
+        shown = e["frame_shown"]
+        row = {
+            "saved_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "verdict": e["verdict"],
+            "name": name,
+            "ra": fmt(ra), "dec": fmt(dec), "pixels": n,
+            "collections": "+".join(e["collections"]),
+            **({k: box[k] for k in ("x1", "y1", "x2", "y2")} if box else dict.fromkeys(("x1", "y1", "x2", "y2"), "")),
+            "ra1": fmt(corners[0] and corners[0][0]), "dec1": fmt(corners[0] and corners[0][1]),
+            "ra2": fmt(corners[1] and corners[1][0]), "dec2": fmt(corners[1] and corners[1][1]),
+            "box_ra": fmt(centre[0]), "box_dec": fmt(centre[1]),
+            "frame_shown": "" if shown is None else shown,
+            "frame_shown_utc": "" if shown is None else e["frame_utc"][shown],
+            "frame_utc": json.dumps(e["frame_utc"]),
+            "detectors": json.dumps(e["detectors"]),
+            "view": e["view"],
+            "gif": gifs.get("", ""),
+            "diff_gif": gifs.get("_diff", ""),
+        }
+        with _openSavesCsv() as f:
+            csv.DictWriter(f, SAVES_COLUMNS).writerow(row)
+    return {"saved": True, "name": name, "gif": gifs.get("") or None, "diff_gif": gifs.get("_diff") or None}
+
+
+# ---- Extra overlay layers (python-backend/catalogs.py) ------------------------
+def _catalogs():
+    '''The backend's catalogs module (imported when first needed: it loads astropy).'''
+    if str(BACKEND_DIR) not in sys.path:
+        sys.path.insert(0, str(BACKEND_DIR))
+    import catalogs
+    return catalogs
+
+
+def catalogList():
+    '''
+    The extra layers the frontend can offer (GET /api/catalogs).
+    '''
+    return _catalogs().summary()
+
+
+def catalogLayer(payload):
+    '''
+    One extra layer's sources in a job's frame (POST /api/catalog), fetched on
+    demand when the user switches the layer on.
+
+    Parameters:
+    payload: {name, ra, dec, pixels, frame_mjds: [...]} (the job's field and frame dates)
+
+    Output: the layer, see catalogs.layer. Raises ValueError if the request is invalid.
+    '''
+    cat = _catalogs()
+    if not isinstance(payload, dict) or payload.get("name") not in cat.LAYERS:
+        raise ValueError("Unknown catalogue layer")
+    mjds = payload.get("frame_mjds")
+    if not isinstance(mjds, list) or not 1 <= len(mjds) <= 200:
+        raise ValueError("frame_mjds must be a list of frame dates (MJD)")
+    mjds = [_number(m, "frame_mjds", 40000, 90000) for m in mjds]
+    return cat.layer(payload["name"], _number(payload.get("ra"), "ra", 0, 360),
+                     _number(payload.get("dec"), "dec", -90, 90),
+                     _number(payload.get("pixels"), "pixels", 3, 2040, whole=True),
+                     mjds, BACKEND_DIR / "Cache")
 
 
 def downloadCSV():
     '''
-    Returns the saves.csv file for download by the frontend.
+    Returns saves/saves.csv for download by the frontend (None if nothing was saved yet).
     '''
-
-    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "saves.csv"
-
-    if not RESULTS_CSV_PATH.exists():
+    if not SAVES_CSV.exists():
         return None
-
-    with open(RESULTS_CSV_PATH, "rb") as f:
-        return f.read()
+    with _save_lock:
+        return SAVES_CSV.read_bytes()

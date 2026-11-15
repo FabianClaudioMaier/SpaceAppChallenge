@@ -47,16 +47,24 @@ The server only listens on `127.0.0.1` (your own computer).
    (`269.45404`, `4.693388`) or sexagesimal (`17:57:48.97`, `+04:41:36.2`;
    with colons RA is in hours). You can also click the globe; turn that on in
    Settings.
-2. **Settings:** speed (ms per frame), cutout size (50–500 px, 1 px = 6.15″),
-   invert, show difference images.
+2. **Settings:** speed (ms per frame), cutout size (50–1000 px, 1 px = 6.15″),
+   invert, show difference images, contrast and brightness (view only).
 3. **Submit.** A new spot can take a few minutes (downloads). The same request
    again is instant (cache).
-4. **Player:** stop, play and step frame by frame. Click or drag on the image
-   to zoom.
+4. **Player:** stop, play and step frame by frame. Under the image: the date of
+   the frame on screen. Around it: RA and Dec rulers. Tools right of the image
+   (or keys): **Pointer** `V` (click a star for details), **Zoom** `Z` (click or
+   drag), **Box** `B` (drag a box around something).
 5. **Stars:** "Gaia stars", "WISE sources" and "Fast movers" in Settings. They
    follow the frame on screen; fast movers get their track and name. Click a star for
    details: magnitudes, distance, SIMBAD/VizieR links, and its position, date
    and movement in the frame on screen.
+
+6. **Is something moving?** **Yes** (and a box, or without one) or **No**, then
+   **Save**: a row in `middleware/saves/saves.csv` (Settings → Download saves),
+   and for "Yes" the GIFs with rulers, dates and the box burned in, at 2× up to
+   500 px, named after the box centre and the save time, e.g.
+   `J220253.5-565201_20261115T194337Z.gif` (+ `_diff.gif`).
 
 Example: Barnard's star, RA `269.45404`, Dec `4.693388`, 250 px. It creeps
 about 1.7 px north per year across the frames.
@@ -76,7 +84,12 @@ browser (frontend/)
 |---|---|
 | `POST /api/send-to-backend` | `{DEC, RA, PIXELS, MS}` → `{uuid, json}` (`json` = the job's `meta.json`) |
 | `GET /api/videos/<uuid>.gif` | the frames; `<uuid>_diff.gif` the difference images |
-| `POST /api/save` | appends a result to `middleware/saves.csv` |
+| `POST /api/save` | `{uuid, ra, dec, pixels, collections, verdict, box, frame_shown, view, frame_utc, detectors}` → a row in `middleware/saves/saves.csv` + the exported GIFs (`middleware/export.py`) |
+| `GET /api/saves.csv` | the saves so far |
+
+The server only answers requests addressed to `127.0.0.1:<port>` / `localhost:<port>`,
+and API calls only from its own page (JSON, no foreign `Origin`), so other web pages
+open in the same browser can't use it.
 
 GIFs not accessed for 30 minutes are deleted by `middleware/clean_cache.py`,
 which `start.sh` starts along with the server.
@@ -139,9 +152,11 @@ is rebuilt on demand.
 ## Project structure
 
 ```
-frontend/        index.html, app.js, style.css (UI, globe, player)
+frontend/        index.html, app.js, style.css (UI, globe, player),
+                 star-overlay.js (star markers), viewer.js (tools, rulers, box, Save)
 middleware/      server.py (HTTP server + API), middleware.py (runs the backend,
-                 builds GIFs), clean_cache.py, saves.csv
+                 builds GIFs, saves), export.py (saved GIFs), clean_cache.py,
+                 saves/ (saves.csv + exported GIFs)
 python-backend/  backend.py (search, download, align, stack, render),
                  detectors.py (stacking), overlays.py (Gaia/CatWISE stars),
                  requirements.txt, setup_venv.sh, Cache/

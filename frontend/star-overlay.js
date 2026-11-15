@@ -1,9 +1,14 @@
-// Star overlays: the stars from the backend's meta.json ("overlays": Gaia DR3,
-// CatWISE2020 and SIMBAD's known fast movers, see python-backend/overlays.py) drawn over the GIF.
+// Star overlays: the layers switched on in the layer list (layers.js) drawn over
+// the GIF - the job's own (meta.json "overlays": every Gaia DR3 and CatWISE2020
+// source in the frame and SIMBAD's fast movers, python-backend/overlays.py) and
+// the extra ones fetched on demand (python-backend/catalogs.py). Each layer has its
+// shape and colour; its options (layers.js) pick which of its stars are drawn.
 //
-// The backend already moved every star to each frame's date (proper motion) and
-// gives its position per frame in GIF pixels from the top left ("xy", null =
-// outside the image). So this file only has to know which frame is on screen:
+// prepareCatalog moves every star to each frame's date (proper motion; or takes
+// its position per frame, "positions", e.g. the known asteroids) and turns that
+// into GIF pixels from the top left ("xy", null = outside the image), with the
+// frame's grid (the same TAN projection as the backend's make_grid_wcs).
+// After that this file only has to know which frame is on screen:
 //   stopped / stepping  shownFrame (app.js)
 //   playing             frameShowingNow() (app.js), from the time since the GIF started
 //   not known yet       (frames still being decoded, or no ImageDecoder in this
@@ -12,32 +17,37 @@
 //
 // The zoom (app.js openZoom) gets the same markers at its own scale, on the same frame.
 //
-// Uses app.js's top-level variables (both are classic scripts): image, currentFrameIndex,
-// loadGifFrames, currentVideoUuid, zoomDialog.
+// Uses app.js's top-level variables (classic scripts): image, currentFrameIndex,
+// loadGifFrames, currentVideoUuid, zoomDialog; and layers.js's visibleLayers,
+// anyLayerOn, layersVersion, shapeElement.
 
 const starOverlay = document.querySelector("#star-overlay");
 const starInfo = document.querySelector("#star-info");
-const starToggles = {
-  gaia_dr3: document.querySelector("#show-gaia"),
-  catwise2020: document.querySelector("#show-catwise"),
-  simbad_movers: document.querySelector("#show-movers"),
-};
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STAR_MARKER_PX = 6;  // marker radius on screen, whatever the frame size
 const STAR_LABEL_PX = 11;  // font size of the fast movers' names on screen
+// Marker size by brightness, like a star chart: the STAR_SIZE_FULL_RANK brightest
+// of a catalogue full size, down to STAR_SIZE_FAINTEST x that for its faintest -
+// with thousands of sources shown, same-size markers covered the whole image.
+// Fast movers always full size.
+const STAR_SIZE_FULL_RANK = 20;
+const STAR_SIZE_FAINTEST = 0.4;
 
-// Which catalogues are switched on: on unless switched off before (remembered, like "Show diffs")
-const starLayersOn = {};
-for (const [catalog, toggle] of Object.entries(starToggles)) {
-  starLayersOn[catalog] = localStorage.getItem(`showStars_${catalog}`) !== "false";
-  toggle.setAttribute("aria-checked", String(starLayersOn[catalog]));
-  toggle.addEventListener("click", () => {
-    starLayersOn[catalog] = !starLayersOn[catalog];
-    toggle.setAttribute("aria-checked", String(starLayersOn[catalog]));
-    localStorage.setItem(`showStars_${catalog}`, String(starLayersOn[catalog]));
-    buildStarOverlay();
-  });
+// Per star of a layer: its marker size (0..1, see STAR_SIZE_FULL_RANK; "same": all 1)
+function markerSizes(catalog, stars, mode = "brightness") {
+  if (mode === "same") return new Map(stars.map((s) => [s, 1]));
+  const band = catalog.sort_mag;
+  const mags = stars.map((s) => s.mag?.[band]).filter((m) => m !== null && m !== undefined).sort((a, b) => a - b);
+  const bright = mags[Math.min(STAR_SIZE_FULL_RANK, mags.length - 1)];
+  const faint = mags[mags.length - 1];
+  return new Map(stars.map((s) => {
+    const m = s.mag?.[band];
+    if (s.reason.includes("fast") || !mags.length || faint <= bright) return [s, 1];
+    if (m === null || m === undefined) return [s, STAR_SIZE_FAINTEST];
+    const t = Math.min(Math.max((m - bright) / (faint - bright), 0), 1);
+    return [s, 1 - (1 - STAR_SIZE_FAINTEST) * t];
+  }));
 }
 
 let starMarkers = [];     // { star, marker, label, average } of the stars drawn now
@@ -54,7 +64,10 @@ function shownMetadata() {
   if (parsedForUuid !== currentVideoUuid) {
     parsedForUuid = currentVideoUuid;
     try {
-      parsedMetadata = JSON.parse(localStorage.getItem("videoMetadata") ?? "null");
+      parsedMetadata = jobMetadataInMemory?.uuid === currentVideoUuid
+        ? jobMetadataInMemory.metadata // (complete even if localStorage had no room for the stars)
+        : JSON.parse(localStorage.getItem("videoMetadata") ?? "null");
+      prepareOverlays(parsedMetadata);
     } catch {
       parsedMetadata = null;
     }
@@ -105,6 +118,65 @@ function skyPositionAt(star, catalog, mjd) {
   };
 }
 
+// Sky position -> [x, y] in GIF pixels from the frame's top left: the TAN
+// projection of the backend's make_grid_wcs (north up, east left, field centre in
+// the middle; viewer.js frameToSky is the way back). null if behind the tangent point.
+function skyToFrame(ra, dec, metadata) {
+  const rad = Math.PI / 180;
+  const s = (metadata.pixel_scale_arcsec / 3600) * rad; // radians per pixel
+  const n = metadata.pixels;
+  const d = dec * rad;
+  const d0 = metadata.dec * rad;
+  const dra = (ra - metadata.ra) * rad;
+  const cosc = Math.sin(d0) * Math.sin(d) + Math.cos(d0) * Math.cos(d) * Math.cos(dra);
+  if (cosc <= 0) return null;
+  const xi = (Math.cos(d) * Math.sin(dra)) / cosc; // towards east
+  const eta = (Math.cos(d0) * Math.sin(d) - Math.sin(d0) * Math.cos(d) * Math.cos(dra)) / cosc; // north
+  return [n / 2 - xi / s, n / 2 - eta / s];
+}
+
+// Every star's position per frame ("xy") and its SIMBAD / VizieR links, once per
+// job (the backend sends neither: for thousands of stars that would be megabytes).
+function prepareOverlays(metadata) {
+  if (!metadata?.overlays || !metadata.frames) return;
+  for (const catalog of Object.values(metadata.overlays)) {
+    if (catalog) prepareCatalog(catalog, metadata);
+  }
+}
+
+// The same for one layer (layers.js calls it for the extra ones)
+function prepareCatalog(catalog, metadata) {
+  const n = metadata.pixels;
+  for (const star of catalog.stars ?? []) {
+    star.xy ??= metadata.frames.map((frame, i) => {
+      const sky = skyAt(star, catalog, i, frame.mjd_mean);
+      const p = sky && skyToFrame(sky.ra, sky.dec, metadata);
+      return p && p[0] >= 0 && p[0] <= n && p[1] >= 0 && p[1] <= n
+        ? [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100] : null;
+    });
+    star.links ??= {
+      simbad: star.simbad_id
+        ? `https://simbad.cds.unistra.fr/simbad/sim-id?Ident=${encodeURIComponent(star.simbad_id)}`
+        : `https://simbad.cds.unistra.fr/simbad/sim-coo?Coord=${encodeURIComponent(`${star.ra} ${star.dec}`)}` +
+          "&Radius=5&Radius.unit=arcsec",
+      vizier: catalog.vizier_link && star.id.startsWith(catalog.id_prefix ?? "")
+        ? catalog.vizier_link + encodeURIComponent(star.id.slice((catalog.id_prefix ?? "").length))
+        : null,
+    };
+  }
+}
+
+// A star's sky position on frame i (at that frame's date): its own position for
+// that frame if it has them (known asteroids; null = not there), else the
+// catalogue position moved with the proper motion
+function skyAt(star, catalog, i, mjd) {
+  if (star.positions) {
+    const p = star.positions[i];
+    return p ? { ra: p[0], dec: p[1] } : null;
+  }
+  return skyPositionAt(star, catalog, mjd);
+}
+
 // "north-west" etc. for a move in image pixels (north up, east left - see make_grid_wcs)
 function compassDirection(dx, dy) {
   const names = ["north", "north-west", "west", "south-west", "south", "south-east", "east", "north-east"];
@@ -126,8 +198,8 @@ function updateStarInfoFrame() {
   const info = metadata.frames[frame];
   cells.date.textContent =
     `${info.timestamp.slice(0, 16).replace("T", " ")} UTC (frame ${frame + 1} of ${metadata.frames.length})`;
-  const sky = skyPositionAt(star, catalog, info.mjd_mean);
-  cells.sky.textContent = `RA ${formatNumber(sky.ra, 5)}°, Dec ${formatNumber(sky.dec, 5)}°`;
+  const sky = skyAt(star, catalog, frame, info.mjd_mean);
+  cells.sky.textContent = sky ? `RA ${formatNumber(sky.ra, 5)}°, Dec ${formatNumber(sky.dec, 5)}°` : "–";
   const here = star.xy[frame];
   if (!here) {
     cells.pixel.textContent = "outside the image in this frame";
@@ -158,7 +230,10 @@ function showStarInfo(star, catalog) {
       ? `${formatNumber(star.pm_mas_yr.total, 1)} mas/yr (RA ${formatNumber(star.pm_mas_yr.ra, 1)}, Dec ${formatNumber(star.pm_mas_yr.dec, 1)})`
       : null],
     ["Distance", star.distance_ly ? `${formatNumber(star.distance_ly, 2)} light years` : null],
-    ["Catalogue position", `RA ${formatNumber(star.ra, 5)}°, Dec ${formatNumber(star.dec, 5)}° (epoch ${catalog.epoch})`],
+    // per catalogue: variable type, redshift, X-ray / radio flux, artifact flags, ...
+    ...Object.entries(star.info ?? {}),
+    ["Catalogue position", `RA ${formatNumber(star.ra, 5)}°, Dec ${formatNumber(star.dec, 5)}°` +
+      (catalog.epoch ? ` (epoch ${catalog.epoch})` : " (first frame it is in)")],
     ["Selected as", star.reason.join(" + ")],
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
 
@@ -213,7 +288,7 @@ function buildStarOverlay() {
   const metadata = shownMetadata();
   const width = image.clientWidth;
   const key = metadata
-    ? `${metadata.uuid}|${image.currentSrc || image.src}|${width}|${JSON.stringify(starLayersOn)}`
+    ? `${metadata.uuid}|${image.currentSrc || image.src}|${width}|${layersVersion}`
     : "";
   if (key === starOverlayKey) return;
   starOverlayKey = key;
@@ -224,7 +299,7 @@ function buildStarOverlay() {
     selectedStar = null;
     starInfo.hidden = true;
   }
-  if (!metadata || !Object.values(starLayersOn).some(Boolean)) {
+  if (!metadata || !anyLayerOn()) {
     starOverlay.toggleAttribute("hidden", true); // (an <svg> has no .hidden property)
     return;
   }
@@ -245,11 +320,12 @@ function drawStarLayers(svg, metadata, pxPerGifPx, onPick) {
   const fontSize = STAR_LABEL_PX / pxPerGifPx;
   const markers = [];
 
-  for (const [catalogName, catalog] of Object.entries(metadata.overlays)) {
-    if (!catalog || !starLayersOn[catalogName]) continue; // failed in the backend, or switched off
-    const layer = svgElement("g", { class: `star-layer star-layer-${catalogName}` });
+  for (const { key, catalog, stars, options, style } of visibleLayers(metadata)) { // (layers.js)
+    const layer = svgElement("g", { class: `star-layer star-layer-${key}` });
+    layer.style.setProperty("--layer-color", style.color);
+    const sizes = markerSizes(catalog, stars, options.size);
     // brightest drawn last = on top
-    for (const star of [...catalog.stars].reverse()) {
+    for (const star of [...stars].reverse()) {
       const points = star.xy.filter(Boolean);
       if (!points.length) continue;
       const average = [
@@ -257,7 +333,10 @@ function drawStarLayers(svg, metadata, pxPerGifPx, onPick) {
         points.reduce((sum, p) => sum + p[1], 0) / points.length,
       ];
       const fast = star.reason.includes("fast");
-      const group = svgElement("g", { class: `star${fast ? " star-fast" : ""}`, tabindex: "0" });
+      const size = sizes.get(star);
+      const group = svgElement("g", {
+        class: `star${fast ? " star-fast" : ""}${size < 0.75 ? " star-faint" : ""}`, tabindex: "0",
+      });
       const title = svgElement("title");
       title.textContent = starTitle(star, catalog.label);
       group.append(title);
@@ -268,15 +347,15 @@ function drawStarLayers(svg, metadata, pxPerGifPx, onPick) {
           points: points.map((p) => p.join(",")).join(" "),
         }));
       }
-      const marker = catalogName === "gaia_dr3"
-        ? svgElement("circle", { class: "star-marker", r: radius })
-        : svgElement("rect", { class: "star-marker", width: 2 * radius * 0.9, height: 2 * radius * 0.9 });
-      if (catalogName === "simbad_movers") marker.classList.add("star-diamond"); // square turned 45°
+      const r = radius * size;
+      // the layer's shape, centred on (0, 0) and moved to the star (placeMarkers)
+      const marker = svgElement("g", { class: "star-marker" });
+      marker.append(shapeElement(style.shape, r)); // (layers.js)
       // invisible, bigger target for hover / click
-      const hit = svgElement("circle", { class: "star-hit", r: radius * 1.6 });
+      const hit = svgElement("circle", { class: "star-hit", r: Math.max(r * 1.6, radius * 0.8) });
       group.append(marker, hit);
       let label = null;
-      if (fast && star.name) {
+      if (star.name && (options.labels === "named" || (options.labels === "fast" && fast))) {
         label = svgElement("text", { class: "star-label", "font-size": fontSize });
         label.textContent = star.name;
         group.append(label);
@@ -294,7 +373,7 @@ function drawStarLayers(svg, metadata, pxPerGifPx, onPick) {
       // a press on a star must not start the zoom selection on the image below
       group.addEventListener("pointerdown", (event) => event.stopPropagation());
       layer.append(group);
-      markers.push({ star, marker, hit, label, average, radius, fontSize, group });
+      markers.push({ star, marker, hit, label, average, radius: r, fontSize, group });
     }
     svg.append(layer);
   }
@@ -318,7 +397,7 @@ let zoomDrawnFrame;
 // When the zoom opens: the same stars, at the zoom's scale
 function buildZoomStarOverlay(pxPerGifPx) {
   const metadata = shownMetadata();
-  zoomMarkers = metadata && Object.values(starLayersOn).some(Boolean)
+  zoomMarkers = metadata && anyLayerOn()
     ? drawStarLayers(zoomStarOverlay, metadata, pxPerGifPx, (star, catalog) => {
       zoomDialog.close(); // the star card is on the page, under the zoom
       showStarInfo(star, catalog);
@@ -344,15 +423,7 @@ function placeMarkers(markers, frame) {
     group.classList.toggle("star-outside", !position); // outside the image in this frame
     if (!position) continue;
     const [x, y] = position;
-    if (marker.tagName === "rect") {
-      const size = Number(marker.getAttribute("width"));
-      marker.setAttribute("x", x - size / 2);
-      marker.setAttribute("y", y - size / 2);
-      if (marker.classList.contains("star-diamond")) marker.setAttribute("transform", `rotate(45 ${x} ${y})`);
-    } else {
-      marker.setAttribute("cx", x);
-      marker.setAttribute("cy", y);
-    }
+    marker.setAttribute("transform", `translate(${x} ${y})`); // (its shape is centred on 0, 0)
     hit.setAttribute("cx", x);
     hit.setAttribute("cy", y);
     if (label) {
@@ -373,16 +444,9 @@ function starOverlayTick() {
 // The playing GIF's frame is only known once its frames are decoded (app.js does
 // that lazily on the first pause) - with stars switched on, decode right away.
 image.addEventListener("load", () => {
-  if ("ImageDecoder" in window && Object.values(starLayersOn).some(Boolean) && shownMetadata()) {
+  if ("ImageDecoder" in window && anyLayerOn() && shownMetadata()) {
     loadGifFrames().catch((error) => console.warn("Could not decode the GIF frames:", error));
   }
 });
-for (const toggle of Object.values(starToggles)) {
-  toggle.addEventListener("click", () => {
-    if ("ImageDecoder" in window && image.complete && shownMetadata()) {
-      loadGifFrames().catch((error) => console.warn("Could not decode the GIF frames:", error));
-    }
-  });
-}
 
 requestAnimationFrame(starOverlayTick);

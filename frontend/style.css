@@ -31,36 +31,38 @@ p {
 .submit-row {
   margin-top: 20px;
 }
-#fname,
-#lname {
-  transform: translateY(10px) scale(1.25);
-}
-/* Top right: on normal screens in the window corner; on very wide ones it
-   stops at the right edge of the content (max 1240 px wide, centred), so it
-   doesn't drift far away from it. Was positioned from the window centre
-   (+430 px), which cut it off in windows narrower than ~1160 px. */
+
+/* Settings: at the top of the right panel; the panel opens over the globe */
 .settings {
-  position: fixed;
-  top: 16px;
-  right: max(16px, calc(50% - 620px));
-  width: min(300px, calc(100vw - 32px));
+  position: relative;
   z-index: 100;
+  margin-bottom: 16px;
   font-family: "DM Sans", sans-serif;
+}
+
+#settings-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: calc(100dvh - 90px);
+  overflow-y: auto;
 }
 
 #settings-button {
   background: #575a5e;
   display: block;
-  margin: 0 0 0 auto; /* flush right, the panel opens below it */
-  min-width: 220px;
-  padding: 16px 28px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 16px;
   border: 0;
   border-radius: 8px;
-  font-size: 24px;
+  font-size: 18px;
   cursor: pointer;
 }
 
 .settings-panel {font-family: "Space Grotesk", sans-serif;
+  box-sizing: border-box;
   margin-top: 8px;
   padding: 16px;
   color: white;
@@ -238,7 +240,7 @@ p {
 #zoom-close {
   z-index: 1; /* above the zoomed image and its star markers */
   position: absolute;
-  top: 8px;
+  top: 50px; /* on the image, below the RA ruler (42 px), so it covers no label */
   right: 8px;
   width: 32px;
   height: 32px;
@@ -250,66 +252,49 @@ p {
   cursor: pointer;
 }
 
-.coordinate-form {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 28px;
-  width: min(1240px, calc(100% - 32px));
-  margin: 110px auto 48px;
-}
 
 .coordinate-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-  width: min(100%, 620px);
+  gap: 14px;
   font-family: "DM Sans", sans-serif;
 }
 
-.visualization-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
-  align-items: start;
-  gap: 32px;
-  width: 100%;
-}
 
 .coordinate-fields label {
   display: grid;
-  gap: 7px;
+  gap: 6px;
   color: #dce8ff;
+  font-size: 16px;
 }
 
 .coordinate-fields input {
   box-sizing: border-box;
-  width: 75%;
-  padding: 11px 12px;
+  width: 100%;
+  padding: 12px 14px;
   border: 1px solid #55709e;
   border-radius: 8px;
   background: #081b3a;
   color: white;
   font: inherit;
+  font-size: 20px;
 }
 
 .coordinate-fields span {
-  margin-top: 14px;
+  margin-top: 0;
   color: #9eb4d8;
   font-size: 13px;
 }
 
 .celestial-globe-panel {
-  width: min(100%, 560px);
-  margin-inline: auto;
   color: #dce8ff;
   text-align: center;
   font-family: "DM Sans", sans-serif;
 }
 
 .celestial-globe-panel h1 {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   font-family: "Space Grotesk", sans-serif;
-  font-size: 24px;
+  font-size: 20px;
 }
 
 #coordinate-globe {
@@ -365,13 +350,12 @@ p {
 .result-frame {
   position: relative;
   box-sizing: border-box;
-  width: min(100%, 500px);
-  margin: 4px auto;
-  overflow: hidden; /* the image follows the rounded corners */
-  border: 8px solid rgba(159, 197, 255, 0.8);
-  border-radius: 12px;
+  overflow: hidden; /* the image follows the rounded corner */
+  /* white like the rulers: together one white frame. Only the lower right
+     corner is an outer corner (the others touch the rulers), so only it is round. */
+  border: 8px solid white;
+  border-radius: 0 0 12px 0;
   background-color: #081b3a;
-  box-shadow: 0 0 0 4px rgba(82, 122, 184, 0.2), 0 12px 32px rgba(0, 0, 0, 0.4);
 }
 
 .throbber {
@@ -421,22 +405,7 @@ p {
   height: auto;
 }
 
-@media (max-width: 560px) {
-  .coordinate-form {
-    margin-top: 100px;
-  }
 
-  .coordinate-fields {
-    grid-template-columns: 1fr;
-    gap: 12px;
-  }
-}
-
-@media (max-width: 900px) {
-  .visualization-row {
-    grid-template-columns: 1fr;
-  }
-}
 .movement-question {
   text-align: center;
   color: #dce8ff;
@@ -459,58 +428,6 @@ p {
   transform: scale(0.95);           /* Button wird kurz etwas kleiner */
 }
 
-/* Links: GIF oben, Frage darunter. Rechts: Globus, direkt darunter sein Text und
-   Submit. (Früher teilten sich beide Spalten dieselben 2 Zeilen, damit die Frage
-   auf Höhe des Globus-Texts steht - aber die obere Zeile wächst mit dem GIF und
-   der Stern-Infokarte und schob den Text weit unter den Globus.) */
-.result-column {
-  grid-row: span 2;
-  display: grid;
-  grid-template-rows: subgrid;
-}
-
-.celestial-globe-panel {
-  grid-row: span 2;
-}
-
-.result-column {
-  align-items: start;
-}
-
-/* die 560-px-Grenze auf die beiden Teile statt aufs ganze Panel,
-   sonst rechnet der Browser die obere Zeile zu hoch */
-.celestial-globe-panel {
-  width: 100%;
-}
-
-.globe-top,
-.globe-bottom {
-  width: min(100%, 560px);
-  margin-inline: auto;
-}
-
-/* Slightly darker box behind the text under the globe, for readability over
-   the starry background. No fixed height: it grows with whatever text is in it
-   (status messages, the "Apply coordinates" button, ...). */
-.globe-bottom {
-  box-sizing: border-box;
-  margin-top: 4px;
-  padding: 8px 14px;
-  border-radius: 10px;
-  background: rgba(4, 12, 28, 0.55);
-}
-
-.movement-question p {
-  margin: 10px 0 22px;
-}
-
-.movement-question {
-  margin-bottom: 24px; /* Abstand zum Globus, wenn alles untereinander steht */
-}
-
-.visualization-row {
-  row-gap: 0;
-}
 
 /* Standbild beim Stoppen: liegt genau über dem GIF */
 #paused-frame {
@@ -524,7 +441,7 @@ p {
 /* Star overlays (star-overlay.js): over the GIF and the stopped frame. Only the
    stars themselves take the mouse - everywhere else a press still reaches the
    image below (zoom selection). The viewBox is in GIF pixels, so the SVG is
-   exactly as big as the image, label strip included. */
+   exactly as big as the image. */
 #star-overlay {
   position: absolute;
   inset: 0;
@@ -548,11 +465,17 @@ p {
   display: none; /* outside the image in this frame */
 }
 
+/* a marker: a <g> moved to the star, holding the layer's shape (layers.js
+   shapeElement); its colour is the layer's (--layer-color, set per layer) */
 .star-overlay .star-marker {
   fill: none;
+  stroke: var(--layer-color, #4fe3ff);
   stroke-width: 1.5px;
-  vector-effect: non-scaling-stroke;
   filter: drop-shadow(0 0 1px #000);
+}
+
+.star-overlay .star-marker > * {
+  vector-effect: non-scaling-stroke;
 }
 
 .star-overlay .star-hit {
@@ -560,12 +483,15 @@ p {
   stroke: none;
 }
 
-.star-overlay .star-layer-gaia_dr3 .star-marker { stroke: #4fe3ff; }
-.star-overlay .star-layer-catwise2020 .star-marker { stroke: #ffa53d; }
-.star-overlay .star-layer-simbad_movers .star-marker { stroke: #ff5cf0; }
 
 .star-overlay .star-fast .star-marker {
   stroke-width: 2.5px;
+}
+
+/* the fainter part of a catalogue: small and light, so the image stays visible */
+.star-overlay .star-faint .star-marker {
+  stroke-width: 1px;
+  opacity: 0.75;
 }
 
 .star-overlay .star:hover .star-marker,
@@ -592,26 +518,13 @@ p {
   pointer-events: none;
 }
 
-/* Legend next to the switches: the same shapes as on the image */
-.star-legend {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  margin-left: 6px;
-  vertical-align: middle;
-  border: 2px solid;
-}
-
-.star-legend-gaia { border-color: #4fe3ff; border-radius: 50%; }
-.star-legend-wise { border-color: #ffa53d; }
-.star-legend-movers { border-color: #ff5cf0; transform: rotate(45deg) scale(0.8); }
 
 /* Details of a clicked star, below the GIF controls */
 .star-info {
   position: relative;
   box-sizing: border-box;
-  width: min(100%, 500px);
-  margin: 0 auto 16px;
+  width: 300px;
+  margin: 0;
   padding: 12px 16px;
   color: white;
   background: #081b3a;
@@ -682,7 +595,7 @@ p {
 
 .gif-controls {
   text-align: center;
-  margin: 8px 0 16px;
+  margin: 0;
 }
 
 /* runder Stop/Play-Button: zeigt ⏸ beim Abspielen, ▶ wenn gestoppt */
@@ -739,4 +652,684 @@ p {
 
 .gif-controls button[data-tooltip]:hover::after {
   opacity: 1;
+}
+
+/* ---- Layout: side panel (coordinates, star info) | viewer | globe ---- */
+:root {
+  --side-width: clamp(260px, 22vw, 340px);
+  --globe-width: clamp(220px, 20vw, 300px); /* the least the right panel gets */
+  --ruler-left-page: 80px;  /* Dec labels + the upright "Dec" title */
+  --ruler-top-page: 40px;   /* the "RA" title line + RA labels */
+  --tools-width: 50px;      /* the tools (40 px) + their gap to the frame */
+}
+
+/* The viewer is only as wide as its frame needs (--frame-max: the tallest frame
+   that fits, set by viewer.js); the right panel takes the rest. So the gap
+   between the left panel and the Dec ruler equals the one between the tools
+   and the right panel (the viewer's padding). */
+.app-layout {
+  display: grid;
+  grid-template-columns:
+    var(--side-width)
+    minmax(0, calc(var(--frame-max, 100vw) + var(--ruler-left-page) + var(--tools-width) + 32px))
+    minmax(var(--globe-width), 1fr);
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  overflow-x: clip; /* the tools' hover labels must not make the page scroll sideways */
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  background: rgba(4, 12, 28, 0.55);
+}
+
+#submit-button {
+  width: 100%;
+}
+
+.right-panel {
+  box-sizing: border-box;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  background: rgba(4, 12, 28, 0.55);
+}
+
+/* Nearly square, so the sphere (40 % of the width as radius, see app.js
+   createGlobeProjection) fills the panel; room left for the pole labels and
+   the target arrow */
+#coordinate-globe {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 10 / 9;
+}
+
+/* (i) under the globe: its legend, explanation and credit fold out */
+.globe-info-row {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 0;
+}
+
+.info-button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #9fc5ff;
+  border-radius: 50%;
+  background: #133365;
+  color: white;
+  font: italic 700 14px/1 Georgia, serif;
+  cursor: pointer;
+}
+
+.info-button[aria-expanded="true"] {
+  background: #6ca9ff;
+  color: #081b3a;
+}
+
+.globe-info {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(4, 12, 28, 0.55);
+}
+
+.globe-info[hidden],
+.celestial-globe-panel[hidden] {
+  display: none;
+}
+
+.globe-bottom {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(4, 12, 28, 0.55);
+}
+
+/* the frame (as big as fits), its date, the play controls, the question */
+.viewer {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto auto auto;
+  justify-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+}
+
+.frame-stage {
+  justify-self: stretch;
+  min-height: 0;
+  container-type: size; /* the frame is sized from this area (cqw / cqh below) */
+  display: grid;
+  place-items: end center; /* a frame limited by the width sits right above its date */
+}
+
+.right-panel .star-info {
+  width: 100%; /* the panel scrolls if it gets long */
+}
+
+/* the date of the frame on screen and the save messages: on a dark backdrop */
+.frame-time,
+.save-status {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  padding: 5px 14px;
+  border-radius: 8px;
+  background: rgba(4, 12, 28, 0.78);
+  color: #dce8ff;
+  font-family: "DM Sans", sans-serif;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.frame-time:empty,
+.save-status:empty {
+  display: none;
+}
+
+.movement-question {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.movement-question p {
+  margin: 0 8px 0 0;
+  font-size: 18px;
+}
+
+.movement-question button[aria-pressed="true"] {
+  background-color: #2a5aa8;
+  box-shadow: 0 0 0 3px #9fc5ff;
+}
+
+.movement-question button:disabled {
+  opacity: 0.6;
+}
+
+/* ---- Viewer (viewer.js): tools, rulers, box ---- */
+
+/* One GIF pixel = one SPHEREx pixel: shown bigger, keep it a sharp square
+   instead of the browser's blur */
+#result-image,
+#paused-frame,
+#zoom-image,
+#zoom-frame {
+  image-rendering: pixelated;
+}
+
+#contrast,
+#brightness {
+  width: 100%;
+  margin: 10px 0 18px;
+}
+
+.download-saves {
+  display: block;
+  margin-top: -8px;
+  color: #9fc5ff;
+  font-size: 14px;
+  text-align: center;
+}
+
+/* Rulers (white, black text): RA above, Dec left of the frame. The frame's
+   white border joins them into one white frame; the column right of the frame
+   holds the tools (and keeps the image centred). */
+.ruler-frame,
+.zoom-ruler-frame {
+  --ruler-left: var(--ruler-left-page);
+  --ruler-top: var(--ruler-top-page);
+  display: grid;
+  grid-template-rows: var(--ruler-top) auto;
+}
+
+.ruler-frame {
+  /* square, as big as the stage allows */
+  --frame: min(calc(100cqw - var(--ruler-left) - var(--tools-width)), calc(100cqh - var(--ruler-top)));
+  grid-template-columns: var(--ruler-left) var(--frame) var(--tools-width);
+}
+
+.zoom-ruler-frame {
+  --ruler-left: 84px; /* = ZOOM_RULER_LEFT_PX, ZOOM_RULER_TOP_PX in viewer.js */
+  --ruler-top: 42px;
+  grid-template-columns: var(--ruler-left) auto;
+}
+
+/* contain: size - the rulers take the size of their grid cell and never push it
+   (without it the left ruler kept its old height when the window got smaller,
+   and the frame stayed that tall with an empty strip under the image) */
+.ruler {
+  display: block;
+  overflow: hidden;
+  contain: size;
+  background: white;
+}
+
+.ruler-corner {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px 0 0 0;
+}
+
+.ruler-top {
+  grid-area: 1 / 2;
+  width: 100%;
+  height: var(--ruler-top);
+  border-radius: 0 12px 0 0;
+}
+
+.ruler-left {
+  grid-area: 2 / 1;
+  width: var(--ruler-left);
+  height: 100%;
+  border-radius: 0 0 0 12px;
+}
+
+.ruler line {
+  stroke: black;
+  stroke-width: 1px;
+}
+
+.ruler text {
+  fill: black;
+  font-family: "DM Sans", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.ruler .ruler-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.rulers-off .ruler {
+  visibility: hidden;
+}
+
+.ruler-frame > .result-frame {
+  grid-area: 2 / 2;
+  width: 100%;
+  margin: 0;
+}
+
+.zoom-ruler-frame > #zoom-view {
+  grid-area: 2 / 2;
+}
+
+/* Tools: top to bottom, right of the frame's top right corner */
+.viewer-toolbar {
+  grid-area: 2 / 3;
+  align-self: start;
+  justify-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 10px;
+}
+
+.tool-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid #55709e;
+  border-radius: 10px;
+  background: #133365;
+  cursor: pointer;
+}
+
+.tool-button svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: white;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.tool-button[aria-pressed="true"] {
+  border-color: #cfe1ff;
+  background: #6ca9ff;
+}
+
+.tool-button[aria-pressed="true"] svg {
+  stroke: #081b3a;
+}
+
+/* hover labels like the play controls', to the right of the button */
+.tool-button[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 8px);
+  z-index: 3;
+  transform: translateY(-50%);
+  padding: 4px 10px;
+  border: 1px solid #9fc5ff;
+  border-radius: 6px;
+  background-color: #081b3a;
+  color: white;
+  font-family: "DM Sans", sans-serif;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.tool-button[data-tooltip]:hover::after {
+  opacity: 1;
+}
+
+/* the cursor says what a press on the image does */
+.result-frame[data-tool="pointer"] #result-image { cursor: default; }
+.result-frame[data-tool="zoom"] #result-image { cursor: zoom-in; }
+.result-frame[data-tool="box"] #result-image { cursor: crosshair; }
+
+/* Zoom and Box: a drag may start on a star marker (they cover much of the
+   image), so the stars only take clicks with the Pointer tool */
+.result-frame:not([data-tool="pointer"]) .star-overlay .star {
+  pointer-events: none;
+}
+
+#zoom-selection.box-selection {
+  border-color: #00ff00;
+  background: #00ff0022;
+}
+
+/* The marked box (frame pixels, like the star overlay) */
+.box-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.box-overlay[hidden] {
+  display: none;
+}
+
+.box-overlay rect {
+  fill: #00ff0014;
+  stroke: #00ff00;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+
+#zoom-box-overlay {
+  position: absolute;
+  inset: auto; /* placed like the zoomed image (app.js openZoom) */
+}
+
+/* Narrow windows (phones): one column - coordinates, the frame (as wide as the
+   screen), the star info, the globe. The side panel steps aside (display:
+   contents) so its parts can be put around the viewer. */
+@media (max-width: 900px) {
+  .app-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    height: auto;
+    min-height: 100dvh;
+    box-sizing: border-box;
+    padding: 12px 12px 24px;
+  }
+
+  .side-panel,
+  .right-panel {
+    display: contents;
+  }
+
+  .coordinate-fields { order: 1; }
+  .submit-row { order: 2; }
+  .viewer { order: 3; padding: 0; }
+  .star-info { order: 4; }
+  .celestial-globe-panel { order: 5; }
+
+  .frame-stage {
+    container-type: inline-size;
+  }
+
+  .ruler-frame {
+    --ruler-left: 72px;
+    --tools-width: 52px;
+    --frame: calc(100cqw - var(--ruler-left) - var(--tools-width));
+  }
+
+  .settings { order: 0; margin: 0; }
+
+  .movement-question p {
+    flex-basis: 100%; /* the question on its own line, the buttons below it */
+    margin: 0;
+    text-align: center;
+  }
+}
+
+/* ---- Layer list (layers.js): which catalogues are drawn, and how ---- */
+.layers {
+  color: #dce8ff;
+  font-family: "DM Sans", sans-serif;
+  font-size: 14px;
+}
+
+.layers-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.layers h2 {
+  margin: 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 18px;
+}
+
+.layers select,
+.layers input[type="number"],
+.layers input[type="search"] {
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border: 1px solid #55709e;
+  border-radius: 6px;
+  background: #133365;
+  color: white;
+  font: inherit;
+  font-size: 13px;
+}
+
+.layer-list,
+.layer-add-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.layer-row {
+  display: grid;
+  grid-template-columns: 22px 16px minmax(0, 1fr) auto 22px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.layer-row:hover,
+.layer-row.layer-open {
+  background: #10284f;
+}
+
+.layer-off .layer-name,
+.layer-off .layer-symbol,
+.layer-off .layer-count {
+  opacity: 0.45;
+}
+
+.layer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-count {
+  color: #8fa6c8;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.layer-symbol {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke-width: 1.8;
+}
+
+/* the eye: open (shown) / shut */
+.layer-eye {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.layer-eye::before {
+  content: "";
+  position: absolute;
+  inset: 6px 2px;
+  border: 2px solid #9fc5ff;
+  border-radius: 50% / 60%;
+}
+
+.layer-eye::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9fc5ff;
+}
+
+.layer-eye[aria-pressed="false"]::before,
+.layer-eye[aria-pressed="false"]::after {
+  opacity: 0.3;
+}
+
+.layer-more {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #9fc5ff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.layer-more[aria-expanded="true"] {
+  background: #133365;
+}
+
+.layer-options {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 8px 28px;
+  padding: 8px 10px;
+  border-left: 2px solid #55709e;
+  font-size: 13px;
+}
+
+.layer-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.layer-option input[type="number"] {
+  width: 72px;
+}
+
+.layer-option input:disabled {
+  opacity: 0.4;
+}
+
+.layer-range {
+  display: grid;
+  gap: 2px;
+}
+
+.layer-range input {
+  width: 100%;
+  margin: 0;
+}
+
+.layer-range-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.layer-source {
+  margin: 2px 0 0;
+  color: #8fa6c8;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.layer-remove,
+.layer-add-button {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid #55709e;
+  border-radius: 6px;
+  background: #133365;
+  color: white;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.layer-add-button {
+  margin-top: 8px;
+}
+
+.layer-add-panel {
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid #55709e;
+  border-radius: 8px;
+  background: #081b3a;
+}
+
+.layer-add-panel[hidden] {
+  display: none;
+}
+
+.layer-add-panel input[type="search"] {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.layer-add-list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.layer-add-group {
+  margin: 8px 0 2px;
+  color: #9fc5ff;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.layer-add-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  column-gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: white;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.layer-add-item:hover {
+  background: #10284f;
+}
+
+.layer-add-item small {
+  grid-column: 2;
+  color: #8fa6c8;
 }
