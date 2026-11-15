@@ -24,7 +24,10 @@ p {
   font-size: 20px;
   font-family: "DM Sans", sans-serif;
   background-color: #133365;
-color: white;}
+  color: white;
+  position: relative;
+  left: -37px;
+}
 #fname,
 #lname {
   transform: translateY(10px) scale(1.25);
@@ -349,7 +352,7 @@ color: white;}
   width: min(100%, 500px);
   margin: 4px auto;
   overflow: hidden; /* the image follows the rounded corners */
-  border: 4px solid rgba(159, 197, 255, 0.8);
+  border: 8px solid rgba(159, 197, 255, 0.8);
   border-radius: 12px;
   background-color: #081b3a;
   box-shadow: 0 0 0 4px rgba(82, 122, 184, 0.2), 0 12px 32px rgba(0, 0, 0, 0.4);
@@ -410,6 +413,9 @@ color: white;}
   .coordinate-fields {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+  #submit-button {
+    left: -12.5%;
   }
 
 }
