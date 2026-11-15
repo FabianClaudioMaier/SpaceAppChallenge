@@ -248,3 +248,17 @@ def save(metadata):
             writer.writerow(["DEC", "RA", "detectors"])
 
         writer.writerow(row)
+
+
+def downloadCSV():
+    '''
+    Returns the saves.csv file for download by the frontend.
+    '''
+
+    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "saves.csv"
+
+    if not RESULTS_CSV_PATH.exists():
+        return None
+
+    with open(RESULTS_CSV_PATH, "rb") as f:
+        return f.read()
