@@ -370,6 +370,15 @@ def find_exposures(ra: float, dec: float, collection: str) -> list[Exposure]:
         t = Irsa.query_sia(pos=(SkyCoord(ra * u.deg, dec * u.deg), 1 * u.arcsec),
                            collection=collection, maxrec=20000)
     except Exception as exc:
+        # The AWS bucket can't be searched (no position index, only the files), so
+        # the fallback is the last list IRSA gave for this spot, even if older than
+        # QUERY_TTL_S - only images newer than that are missing. The files themselves
+        # then come from AWS as usual (see image_header, _read_whole_rows).
+        stale = _read_json(path)
+        if stale is not None:
+            log.warning("IRSA image search for %s failed (%s); using the last list IRSA gave",
+                        collection, exc)
+            return [Exposure(**{**e, "collection": collection}) for e in stale]
         raise BackendError(EXIT_DOWNLOAD_FAILED, f"IRSA image search failed: {exc}")
     exposures = []
     for row in t:
