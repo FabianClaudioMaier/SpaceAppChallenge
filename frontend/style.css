@@ -439,6 +439,12 @@ p {
   font-family: "DM Sans", sans-serif;
   background-color: #133365;
   color: white;
+  transition: box-shadow 0.4s, transform 0.1s;
+}
+
+.movement-question button:active {
+  box-shadow: 0 0 0 3px #9fc5ff;   /* hellblauer Rand */
+  transform: scale(0.95);           /* Button wird kurz etwas kleiner */
 }
 
 /* Frage auf gleicher Höhe wie der Text unter dem Globus:
