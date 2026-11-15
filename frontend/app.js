@@ -27,6 +27,9 @@ let appliedSpeed = Number(speedInput.value);
 const coordinateGlobe = document.querySelector("#coordinate-globe");
 const globeStatus = document.querySelector("#globe-status");
 const globeContext = coordinateGlobe.getContext("2d");
+const movingYesButton = document.querySelector("#moving-yes");
+const movingNoButton = document.querySelector("#moving-no");
+const movingSaveButton = document.querySelector("#moving-save");
 
 const angleComponent = String.raw`(?:\d+(?:\.\d*)?|\.\d+)`;
 const decimalAnglePattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -1006,4 +1009,16 @@ zoomDialog.addEventListener("click", (event) => {
   ) {
     zoomDialog.close();
   }
+});
+movingYesButton.addEventListener("click", () => {
+  movingSaveButton.hidden = false;   // Yes → Save anzeigen
+});
+
+movingNoButton.addEventListener("click", () => {
+  movingSaveButton.hidden = true;    // No → Save wieder verstecken
+});
+
+movingSaveButton.addEventListener("click", () => {
+  // TODO: hier kommt hin, was "Save" wirklich tun soll
+  movingSaveButton.hidden = true;    // nach dem Benutzen verschwinden
 });

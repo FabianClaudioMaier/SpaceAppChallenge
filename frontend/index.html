@@ -79,7 +79,8 @@
       </div>
 
       <div class="visualization-row">
-        <div class="result-frame">
+        <div class="result-column">
+          <div class="result-frame">
           <img
             id="result-image"
             alt="Astronomy preview"
@@ -91,7 +92,14 @@
             <span class="spinner" aria-hidden="true"></span>
             <span id="throbber-text" role="status">Working…</span>
           </div>
+        </div>       
+           <div class="movement-question">
+          <p>Is something moving?</p>
+          <button id="moving-yes" type="button">Yes</button>
+          <button id="moving-no" type="button">No</button>
+          <button id="moving-save" type="button" hidden>Save</button>
         </div>
+      </div>
         <section class="celestial-globe-panel" aria-labelledby="globe-heading">
           <h1 id="globe-heading">Celestial pointing</h1>
           <canvas
