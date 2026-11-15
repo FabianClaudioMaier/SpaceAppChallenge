@@ -238,7 +238,7 @@ p {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px;
+  gap: 28px;
   width: min(1240px, calc(100% - 32px));
   margin: 110px auto 48px;
 }
@@ -467,7 +467,7 @@ p {
 }
 
 .movement-question p {
-  margin: 4px 0 12px;
+  margin: 1px 0 22px;
 }
 
 .movement-question {
