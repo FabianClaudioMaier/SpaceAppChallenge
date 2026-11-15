@@ -473,7 +473,7 @@ p {
 }
 
 .movement-question p {
-  margin: 1px 0 22px;
+  margin: 10px 0 22px;
 }
 
 .movement-question {
@@ -523,4 +523,32 @@ p {
 
 #play-pause-gif.paused .icon-play {
   display: block;
+}
+
+/* kleines Info-Fenster über ⏮ / ⏭ beim Drüberfahren mit der Maus */
+.gif-controls button[data-tooltip] {
+  position: relative;
+}
+
+.gif-controls button[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 6px;
+  background-color: #081b3a;
+  border: 1px solid #9fc5ff;
+  color: white;
+  font-family: "DM Sans", sans-serif;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.gif-controls button[data-tooltip]:hover::after {
+  opacity: 1;
 }
