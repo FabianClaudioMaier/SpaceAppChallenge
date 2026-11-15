@@ -221,8 +221,15 @@ def sendToFrontend(Video, uuid, suffix=""):
     return uuid # should send the video_id to the frontend, but for now we just return the uuid
 
 
-def save():
+def save(metadata):
     '''
     Writes the parameters to the results.csv file for storage.
+
+    Parameters:
+    metadata: dictionary containing the parameters to be saved
     '''
+
+    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "results.csv"
+    with open(RESULTS_CSV_PATH, "a") as f:
+        f.write(f"{metadata['DEC']},{metadata['RA']},{metadata['PIXELS']},{metadata['interval']},{datetime.now().isoformat()}\n")
     pass
