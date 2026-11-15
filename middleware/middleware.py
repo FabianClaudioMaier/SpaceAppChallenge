@@ -222,4 +222,7 @@ def sendToFrontend(Video, uuid, suffix=""):
 
 
 def save():
+    '''
+    Writes the parameters to the results.csv file for storage.
+    '''
     pass
