@@ -811,6 +811,16 @@ async function requestVideoUuid() {
     if (typeof result.uuid !== "string" || !result.uuid) {
       throw new Error("Middleware returned no UUID");
     }
+    // The submit handler keeps storing the UUID. Keep the matching metadata
+    // for the next step of processing, without changing the current GIF flow.
+    if (result.json !== undefined) {
+      if (result.json === null || typeof result.json !== "object" || Array.isArray(result.json)) {
+        throw new Error("Middleware returned invalid JSON metadata");
+      }
+      localStorage.setItem("videoMetadata", JSON.stringify(result.json));
+    } else {
+      localStorage.removeItem("videoMetadata");
+    }
     return result.uuid;
   }
 }
@@ -1051,7 +1061,18 @@ movingNoButton.addEventListener("click", () => {
   movingSaveButton.hidden = true;    // No → Save wieder verstecken
 });
 
-movingSaveButton.addEventListener("click", () => {
-  // TODO: hier kommt hin, was "Save" wirklich tun soll
-  movingSaveButton.hidden = true;    // nach dem Benutzen verschwinden
+movingSaveButton.addEventListener("click", async () => {
+  movingSaveButton.disabled = true;
+  try {
+    const response = await fetch("/api/save", { method: "POST" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    movingSaveButton.hidden = true;
+  } catch (error) {
+    console.error("Saving failed:", error);
+    alert(`Saving failed: ${error.message}`);
+  } finally {
+    movingSaveButton.disabled = false;
+  }
 });
