@@ -757,26 +757,62 @@ declinationInput.addEventListener("input", () => {
   localStorage.setItem("declination", declinationInput.value);
 });
 
-async function requestVideoUuid(DEC, RA, PIXELS, MS) {
-  const response = await fetch("/api/send-to-backend", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ DEC, RA, PIXELS, MS }),
-  });
-  const text = await response.text();
-  let result;
-  try {
-    result = JSON.parse(text);
-  } catch {
-    throw new Error(`Server antwortete nicht mit JSON (HTTP ${response.status}: ${text.slice(0, 80)}). Läuft start.sh?`);
+const MAX_TRANSIENT_RETRIES = 3;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+function retryDelayMs(response, retry) {
+  const fallback = Math.min(2000 * 2 ** retry, MAX_RETRY_DELAY_MS);
+  const retryAfter = response.headers.get("Retry-After");
+  if (!retryAfter) return fallback;
+
+  const seconds = Number(retryAfter);
+  const suggested = Number.isFinite(seconds)
+    ? seconds * 1000
+    : Date.parse(retryAfter) - Date.now();
+  return Number.isFinite(suggested)
+    ? Math.max(0, Math.min(suggested, MAX_RETRY_DELAY_MS))
+    : fallback;
+}
+
+async function requestVideoUuid() {
+  for (let retry = 0; ; retry += 1) {
+    const response = await fetch("/api/send-to-backend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        DEC: declinationInput.value,
+        RA: rightAscensionInput.value,
+        PIXELS: Number(pixelSizeInput.value),
+        MS: Number(speedInput.value),
+      }),
+    });
+    const text = await response.text();
+
+    if ((response.status === 502 || response.status === 503) && retry < MAX_TRANSIENT_RETRIES) {
+      const delayMs = retryDelayMs(response, retry);
+      loadingPhase = `IRSA unavailable (HTTP ${response.status}); retry ${retry + 1}/${MAX_TRANSIENT_RETRIES}…`;
+      throbberText.textContent = loadingPhase;
+      console.warn(`${loadingPhase} Waiting ${Math.ceil(delayMs / 1000)} s.`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      loadingPhase = "Working…";
+      throbberText.textContent = loadingPhase;
+      continue;
+    }
+
+    let result;
+    try {
+      result = JSON.parse(text);
+    } catch {
+      throw new Error(`Server antwortete nicht mit JSON (HTTP ${response.status}: ${text.slice(0, 80)}). Läuft start.sh?`);
+    }
+    if (!response.ok) {
+      throw new Error(result.error ?? `HTTP ${response.status}`);
+    }
+    if (typeof result.uuid !== "string" || !result.uuid) {
+      throw new Error("Middleware returned no UUID");
+    }
+    return result.uuid;
   }
-  if (!response.ok) {
-    throw new Error(result.error ?? `HTTP ${response.status}`);
-  }
-  if (typeof result.uuid !== "string" || !result.uuid) {
-    throw new Error("Middleware returned no UUID");
-  }
-  return result.uuid;
 }
 
 coordinateForm.addEventListener("submit", async (event) => {
@@ -799,12 +835,7 @@ coordinateForm.addEventListener("submit", async (event) => {
 
   setLoading(true);
   try {
-    const uuid = await requestVideoUuid(
-      declinationInput.value,
-      rightAscensionInput.value,
-      Number(pixelSizeInput.value),
-      Number(speedInput.value)
-    );
+    const uuid = await requestVideoUuid();
     stopVideoHeartbeat();
     currentVideoUuid = uuid;
     loadingUuid = uuid; // the throbber stays until this job's GIF has loaded
@@ -831,6 +862,7 @@ coordinateForm.addEventListener("submit", async (event) => {
 // new GIF is on screen (the request itself only returns when the backend is done).
 let loadingTimer = null;
 let loadingUuid = null;
+let loadingPhase = "Working…";
 
 function setLoading(on) {
   clearInterval(loadingTimer);
@@ -842,9 +874,10 @@ function setLoading(on) {
   applySettingsButton.disabled = on;
   if (on) {
     const started = Date.now();
-    throbberText.textContent = "Working… 0 s";
+    loadingPhase = "Working…";
+    throbberText.textContent = `${loadingPhase} 0 s`;
     loadingTimer = setInterval(() => {
-      throbberText.textContent = `Working… ${Math.floor((Date.now() - started) / 1000)} s`;
+      throbberText.textContent = `${loadingPhase} ${Math.floor((Date.now() - started) / 1000)} s`;
     }, 1000);
   }
 }
