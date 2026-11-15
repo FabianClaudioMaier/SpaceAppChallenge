@@ -30,6 +30,9 @@ const globeContext = coordinateGlobe.getContext("2d");
 const movingYesButton = document.querySelector("#moving-yes");
 const movingNoButton = document.querySelector("#moving-no");
 const movingSaveButton = document.querySelector("#moving-save");
+const pausedFrame = document.querySelector("#paused-frame");
+const playPauseButton = document.querySelector("#play-pause-gif");
+const gifControls = document.querySelector(".gif-controls");
 
 const angleComponent = String.raw`(?:\d+(?:\.\d*)?|\.\d+)`;
 const decimalAnglePattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -915,7 +918,7 @@ settingsButton.addEventListener("click", () => {
 invertButton.addEventListener("click", () => {
   const isOn = invertButton.getAttribute("aria-checked") === "true";
   invertButton.setAttribute("aria-checked", String(!isOn));
-  image.style.filter = isOn ? "none" : "invert(1)";
+  image.style.filter = isOn ? "none" : "invert(1)";  pausedFrame.style.filter = image.style.filter;
 });
 
 // Switches the shown GIF; "Invert GIF" is a filter on the image itself,
@@ -1084,4 +1087,89 @@ movingSaveButton.addEventListener("click", async () => {
   } finally {
     movingSaveButton.disabled = false;
   }
+});
+// Stop/Play: an <img> can't pause a GIF. So stopping splits the GIF into its
+// frames (ImageDecoder) and shows the current one on a canvas over the GIF;
+// playing on then runs the frames on that canvas, from where it stopped.
+let gifFrames = [];      // the frames of the GIF that is showing: { bitmap, duration }
+let gifFramesSrc = "";   // which GIF gifFrames belongs to
+let gifStartTime = 0;    // when the <img> started playing it
+let shownFrame = 0;      // number of the frame on the canvas
+let canvasTimer = null;  // runs while the canvas plays
+let isPaused = false;
+
+gifControls.hidden = !("ImageDecoder" in window); // only works on localhost / https
+
+function showPaused(paused) {
+  isPaused = paused;
+  playPauseButton.classList.toggle("paused", paused); // CSS swaps the icon
+  playPauseButton.setAttribute("aria-label", paused ? "Play" : "Stop");
+}
+
+image.addEventListener("load", () => {
+  gifStartTime = performance.now();
+  clearTimeout(canvasTimer);
+  pausedFrame.hidden = true; // a new GIF always starts playing in the <img>
+  showPaused(false);
+});
+
+async function loadGifFrames() {
+  const src = image.currentSrc || image.src;
+  if (src === gifFramesSrc) return; // already split
+  const data = await (await fetch(src)).arrayBuffer();
+  const decoder = new ImageDecoder({ data, type: "image/gif" });
+  await decoder.tracks.ready;
+  const frames = [];
+  for (let i = 0; i < decoder.tracks.selectedTrack.frameCount; i++) {
+    const { image: frame } = await decoder.decode({ frameIndex: i });
+    frames.push({
+      bitmap: await createImageBitmap(frame),
+      duration: (frame.duration ?? 100_000) / 1000, // microseconds -> ms
+    });
+    frame.close();
+  }
+  gifFrames = frames;
+  gifFramesSrc = src;
+}
+
+// Which frame the <img> shows right now, worked out from the time since it started.
+function frameShowingNow() {
+  const total = gifFrames.reduce((sum, f) => sum + f.duration, 0);
+  let t = (performance.now() - gifStartTime) % total;
+  let i = 0;
+  while (t >= gifFrames[i].duration) {
+    t -= gifFrames[i].duration;
+    i++;
+  }
+  return i;
+}
+
+function drawFrame(i) {
+  shownFrame = i;
+  const bitmap = gifFrames[i].bitmap;
+  pausedFrame.width = bitmap.width;
+  pausedFrame.height = bitmap.height;
+  pausedFrame.getContext("2d").drawImage(bitmap, 0, 0);
+}
+
+playPauseButton.addEventListener("click", async () => {
+  if (isPaused) { // ▶ pressed: play on from the frame that is shown
+    showPaused(false);
+    const next = () => {
+      drawFrame((shownFrame + 1) % gifFrames.length);
+      canvasTimer = setTimeout(next, gifFrames[shownFrame].duration);
+    };
+    canvasTimer = setTimeout(next, gifFrames[shownFrame].duration);
+    return;
+  }
+  // ⏸ pressed
+  if (!image.complete || image.naturalWidth === 0) return; // no GIF loaded yet
+  clearTimeout(canvasTimer);
+  if (pausedFrame.hidden) { // the <img> is playing: freeze its current frame
+    await loadGifFrames();
+    drawFrame(frameShowingNow());
+    pausedFrame.style.filter = image.style.filter; // keep "Invert GIF"
+    pausedFrame.hidden = false;
+  }
+  showPaused(true);
 });
