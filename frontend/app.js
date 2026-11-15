@@ -33,6 +33,8 @@ const movingSaveButton = document.querySelector("#moving-save");
 const pausedFrame = document.querySelector("#paused-frame");
 const playPauseButton = document.querySelector("#play-pause-gif");
 const gifControls = document.querySelector(".gif-controls");
+const prevFrameButton = document.querySelector("#prev-frame");
+const nextFrameButton = document.querySelector("#next-frame");
 
 const angleComponent = String.raw`(?:\d+(?:\.\d*)?|\.\d+)`;
 const decimalAnglePattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
@@ -1152,7 +1154,20 @@ function drawFrame(i) {
   pausedFrame.getContext("2d").drawImage(bitmap, 0, 0);
 }
 
+// Freezes the GIF on the frame that is showing now (nothing to do if already stopped).
+async function pauseGif() {
+  clearTimeout(canvasTimer);
+  if (pausedFrame.hidden) { // the <img> is playing: freeze its current frame
+    await loadGifFrames();
+    drawFrame(frameShowingNow());
+    pausedFrame.style.filter = image.style.filter; // keep "Invert GIF"
+    pausedFrame.hidden = false;
+  }
+  showPaused(true);
+}
+
 playPauseButton.addEventListener("click", async () => {
+  if (!image.complete || image.naturalWidth === 0) return; // no GIF loaded yet
   if (isPaused) { // ▶ pressed: play on from the frame that is shown
     showPaused(false);
     const next = () => {
@@ -1162,14 +1177,15 @@ playPauseButton.addEventListener("click", async () => {
     canvasTimer = setTimeout(next, gifFrames[shownFrame].duration);
     return;
   }
-  // ⏸ pressed
-  if (!image.complete || image.naturalWidth === 0) return; // no GIF loaded yet
-  clearTimeout(canvasTimer);
-  if (pausedFrame.hidden) { // the <img> is playing: freeze its current frame
-    await loadGifFrames();
-    drawFrame(frameShowingNow());
-    pausedFrame.style.filter = image.style.filter; // keep "Invert GIF"
-    pausedFrame.hidden = false;
-  }
-  showPaused(true);
+  await pauseGif(); // ⏸ pressed
 });
+
+// ⏮ / ⏭: stop and go one frame back / forward (after the last comes the first again)
+async function stepFrame(step) {
+  if (!image.complete || image.naturalWidth === 0) return; // no GIF loaded yet
+  await pauseGif();
+  drawFrame((shownFrame + step + gifFrames.length) % gifFrames.length);
+}
+
+prevFrameButton.addEventListener("click", () => stepFrame(-1));
+nextFrameButton.addEventListener("click", () => stepFrame(1));
