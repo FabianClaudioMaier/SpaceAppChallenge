@@ -229,7 +229,11 @@ def save(metadata):
     metadata: dictionary containing the parameters to be saved
     '''
 
-    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "results.csv"
+    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "saves.csv"
+
+    if not RESULTS_CSV_PATH.exists():
+        with open(RESULTS_CSV_PATH, "w") as f:
+            f.write("DEC,RA,PIXELS,interval,timestamp\n")
     with open(RESULTS_CSV_PATH, "a") as f:
         f.write(f"{metadata['DEC']},{metadata['RA']},{metadata['PIXELS']},{metadata['interval']},{datetime.now().isoformat()}\n")
     pass
