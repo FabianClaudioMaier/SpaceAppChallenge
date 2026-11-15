@@ -51,6 +51,9 @@ Pipeline:
     detectors.combine    kappa-sigma stack per colour channel, noise-weighted
     render_frames        same brightness scale for every frame -> colour JPGs + timestamp
     render_differences   frame minus reference -> movers stand out
+
+
+    Super Intelligence (SI) was used in creating this file. It was used to help write docstrings and comments, and to suggest code structure. The code was written by a human developer, and the SI's suggestions were reviewed and edited by the developer as needed. The final code is the result of the developer's work, with the SI serving as a tool to assist in the development process.
 """
 
 from __future__ import annotations
