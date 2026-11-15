@@ -1069,10 +1069,17 @@ movingNoButton.addEventListener("click", () => {
 movingSaveButton.addEventListener("click", async () => {
   movingSaveButton.disabled = true;
   try {
+    /* Normal metadata source, to restore after the temporary file workaround:
     const metadata = localStorage.getItem("videoMetadata");
     if (!metadata) {
       throw new Error("No video metadata available to save");
     }
+    */
+    const metadataResponse = await fetch("/example_meta_barnard.json", { cache: "no-store" });
+    if (!metadataResponse.ok) {
+      throw new Error(`Could not load example metadata: HTTP ${metadataResponse.status}`);
+    }
+    const metadata = await metadataResponse.text();
     const response = await fetch("/api/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1106,6 +1113,7 @@ function showPaused(paused) {
   isPaused = paused;
   playPauseButton.classList.toggle("paused", paused); // CSS swaps the icon
   playPauseButton.setAttribute("aria-label", paused ? "Play" : "Stop");
+  playPauseButton.dataset.tooltip = paused ? "Play" : "Pause"; // text of the hover box
 }
 
 image.addEventListener("load", () => {
