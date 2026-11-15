@@ -1834,7 +1834,7 @@ def build_frames_cached(ra: float, dec: float, pixels: int, out_dir: Path, user_
 # Leftovers of killed jobs (".<name>.<pid>.tmp" files, staging folders) older
 # than STALE_TEMP_S are deleted too. Deleting is safe while other jobs run: a
 # file that vanishes is simply fetched or built again.
-CACHE_MAX_BYTES = 10 * 1024**3
+CACHE_MAX_BYTES = 128 * 1024**3
 CACHE_TRIM_TO = 0.8
 CACHE_TRIM_EVERY_S = 3600
 STALE_TEMP_S = 24 * 3600

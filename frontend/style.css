@@ -439,6 +439,12 @@ p {
   font-family: "DM Sans", sans-serif;
   background-color: #133365;
   color: white;
+  transition: box-shadow 0.4s, transform 0.1s;
+}
+
+.movement-question button:active {
+  box-shadow: 0 0 0 3px #9fc5ff;   /* hellblauer Rand */
+  transform: scale(0.95);           /* Button wird kurz etwas kleiner */
 }
 
 /* Frage auf gleicher Höhe wie der Text unter dem Globus:
@@ -476,4 +482,45 @@ p {
 
 .visualization-row {
   row-gap: 0;
+}
+
+/* Standbild beim Stoppen: liegt genau über dem GIF */
+#paused-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.gif-controls {
+  text-align: center;
+  margin: 8px 0 16px;
+}
+
+/* runder Stop/Play-Button: zeigt ⏸ beim Abspielen, ▶ wenn gestoppt */
+.gif-controls button {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  margin: 0 6px;
+  background-color: #133365;
+}
+
+.gif-controls button svg {
+  width: 24px;
+  height: 24px;
+  fill: white;
+}
+
+#play-pause-gif .icon-play,
+#play-pause-gif.paused .icon-pause {
+  display: none;
+}
+
+#play-pause-gif.paused .icon-play {
+  display: block;
 }

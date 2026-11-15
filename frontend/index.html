@@ -80,19 +80,31 @@
 
       <div class="visualization-row">
         <div class="result-column">
-          <div class="result-frame">
+          <div class="gif-area"><div class="result-frame">
           <img
             id="result-image"
             alt="Astronomy preview"
             width="500"
             height="333"
             draggable="false"
-          />
+          />          <canvas id="paused-frame" hidden></canvas>
           <div id="throbber" class="throbber" hidden>
             <span class="spinner" aria-hidden="true"></span>
             <span id="throbber-text" role="status">Working…</span>
           </div>
-        </div>       
+        </div>
+        <div class="gif-controls">
+          <button id="prev-frame" type="button" aria-label="Previous frame">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
+          </button><button id="play-pause-gif" type="button" aria-label="Stop">
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          </button>        
+           <button id="next-frame" type="button" aria-label="Next frame">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
+          </button>
+        </div>
+        </div>  
            <div class="movement-question">
           <p>Is something moving?</p>
           <button id="moving-yes" type="button">Yes</button>
