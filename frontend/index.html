@@ -12,6 +12,7 @@
     />
     <link rel="stylesheet" href="style.css" />
     <script src="app.js" defer></script>
+    <script src="star-overlay.js" defer></script>
   </head>
   <body><div class="settings">
   <button id="settings-button" type="button" aria-controls="settings-panel" aria-expanded="false">⚙ Settings</button>
@@ -29,6 +30,24 @@
      </button>
      <span>Show diffs</span>
    </div>
+   <div class="setting-row">
+     <button id="show-gaia" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show Gaia stars">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>Gaia stars <span class="star-legend star-legend-gaia" aria-hidden="true"></span></span>
+   </div>
+   <div class="setting-row">
+     <button id="show-catwise" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show WISE sources">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>WISE sources <span class="star-legend star-legend-wise" aria-hidden="true"></span></span>
+   </div>
+   <div class="setting-row">
+     <button id="show-movers" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show known fast movers">
+       <span class="toggle-knob" aria-hidden="true"></span>
+     </button>
+     <span>Fast movers <span class="star-legend star-legend-movers" aria-hidden="true"></span></span>
+   </div>
    <div class="setting-row globe-mode-setting">
      <button id="click-select-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
        <span class="toggle-knob" aria-hidden="true"></span>
@@ -42,8 +61,8 @@
      <span>Pin arrow while rotating</span>
    </div>
 
-    <label for="speed">Speed <output id="speed-value" for="speed">500 ms</output></label>
-    <input id="speed" type="range" min="25" max="1000" step="1" value="500">
+    <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
+    <input id="speed" type="range" min="25" max="1000" step="1" value="250">
 
         <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">250 px</output></label>
 <input id="pixel-size" type="range" min="50" max="500" step="1" value="250">
@@ -88,6 +107,7 @@
             height="333"
             draggable="false"
           />          <canvas id="paused-frame" hidden></canvas>
+          <svg id="star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg>
           <div id="throbber" class="throbber" hidden>
             <span class="spinner" aria-hidden="true"></span>
             <span id="throbber-text" role="status">Working…</span>
@@ -104,7 +124,8 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
           </button>
         </div>
-        </div>  
+        <div id="star-info" class="star-info" aria-live="polite" hidden></div>
+        </div>
            <div class="movement-question">
           <p>Is something moving?</p>
           <button id="moving-yes" type="button">Yes</button>
@@ -135,17 +156,18 @@
             >Three.js planet textures</a>
           </p>
           <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
-          <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>          </div>
+          <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>
+          </div>
+          <!-- right below the globe's text (still inside the form, so it submits it) -->
+          <div class="submit-row"><button id="submit-button" type="submit">Submit</button></div>
         </section>
       </div>
-
-      <button id="submit-button" type="submit">Submit</button>
     </form>
 
 <div id="zoom-selection" hidden></div>
 <dialog id="zoom-dialog" aria-label="Zoomed image">
   <button id="zoom-close" type="button" aria-label="Close zoom">×</button>
-  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"></div>
+  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"><canvas id="zoom-frame" hidden></canvas><svg id="zoom-star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg></div>
 </dialog>
 </body>
 </html>

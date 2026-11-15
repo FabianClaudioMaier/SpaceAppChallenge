@@ -114,8 +114,14 @@ BACKEND_DIR = Path(__file__).resolve().parent
 #     cutouts/<collection>/<obs_id>/D<n>_<coord>_p<pixels>.npz
 #                                                 the part of one image a frame needs
 #                                                 (_h<half>.npz: older squares, still reused)
+<<<<<<< HEAD
 #     catalogs/<catalog>/<coord>_p<pixels>.json  candidate stars for the overlays (overlays.py,
 #                                                 never expires: the catalogues don't change)
+=======
+#     catalogs/<catalog>/<coord>_p<pixels>[_r<rows>].json  candidate stars for the overlays
+#                                                 (overlays.py, never expires: the catalogues
+#                                                 don't change; _r = Gaia/CatWISE row limit)
+>>>>>>> origin/star-overlays
 #     coverage/<coord>_p<pixels>.json
 #                                                 how much of the frame each image covers
 #     results/<collections>/<coord>_p<pixels>/    finished frames of an earlier identical

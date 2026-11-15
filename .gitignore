@@ -26,5 +26,6 @@ tempCodeRunnerFile.*
 .DS_Store
 Thumbs.db
 
+saves.csv
 # ---- Logs ------------------------------------------------------------------
 *.log
