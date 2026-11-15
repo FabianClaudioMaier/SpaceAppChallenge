@@ -10,8 +10,10 @@
 //                       browser) every star at its average position
 // Fast movers also get their whole track as a dashed line.
 //
-// Uses app.js's top-level variables (both are classic scripts): image, pausedFrame,
-// gifFrames, gifFramesSrc, shownFrame, frameShowingNow, loadGifFrames, currentVideoUuid.
+// The zoom (app.js openZoom) gets the same markers at its own scale, on the same frame.
+//
+// Uses app.js's top-level variables (both are classic scripts): image, currentFrameIndex,
+// loadGifFrames, currentVideoUuid, zoomDialog.
 
 const starOverlay = document.querySelector("#star-overlay");
 const starInfo = document.querySelector("#star-info");
@@ -227,10 +229,21 @@ function buildStarOverlay() {
     return;
   }
 
-  starOverlay.setAttribute("viewBox", `0 0 ${image.naturalWidth} ${image.naturalHeight}`);
-  const scale = width / image.naturalWidth; // screen px per GIF px
-  const radius = STAR_MARKER_PX / scale;
-  const fontSize = STAR_LABEL_PX / scale;
+  starMarkers = drawStarLayers(starOverlay, metadata, width / image.naturalWidth, showStarInfo);
+  starOverlay.toggleAttribute("hidden", starMarkers.length === 0);
+  placeStarMarkers();
+}
+
+// Draws the switched-on layers into svg (the page's overlay or the zoom's) and
+// returns their markers, for placeMarkers(). pxPerGifPx: screen px per GIF px
+// there - markers and labels keep their size on screen, but a marker always
+// surrounds at least a 3 px star. onPick(star, catalog): a star was clicked.
+function drawStarLayers(svg, metadata, pxPerGifPx, onPick) {
+  svg.replaceChildren();
+  svg.setAttribute("viewBox", `0 0 ${image.naturalWidth} ${image.naturalHeight}`);
+  const radius = Math.max(STAR_MARKER_PX / pxPerGifPx, 1.5);
+  const fontSize = STAR_LABEL_PX / pxPerGifPx;
+  const markers = [];
 
   for (const [catalogName, catalog] of Object.entries(metadata.overlays)) {
     if (!catalog || !starLayersOn[catalogName]) continue; // failed in the backend, or switched off
@@ -270,38 +283,63 @@ function buildStarOverlay() {
       }
       group.addEventListener("click", (event) => {
         event.stopPropagation();
-        showStarInfo(star, catalog);
+        onPick(star, catalog);
       });
       group.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          showStarInfo(star, catalog);
+          onPick(star, catalog);
         }
       });
       // a press on a star must not start the zoom selection on the image below
       group.addEventListener("pointerdown", (event) => event.stopPropagation());
       layer.append(group);
-      starMarkers.push({ star, marker, hit, label, average, radius, fontSize, group });
+      markers.push({ star, marker, hit, label, average, radius, fontSize, group });
     }
-    starOverlay.append(layer);
+    svg.append(layer);
   }
-  starOverlay.toggleAttribute("hidden", starMarkers.length === 0);
-  placeStarMarkers();
-}
-
-// Which frame is on screen; null if not known (then the average positions are used).
-function overlayFrameIndex() {
-  if (!pausedFrame.hidden) return shownFrame; // stopped, stepping, or playing on the canvas
-  if (gifFrames.length && gifFramesSrc === (image.currentSrc || image.src)) return frameShowingNow();
-  return null;
+  return markers;
 }
 
 function placeStarMarkers() {
   if (!starMarkers.length) return;
-  const frame = overlayFrameIndex();
+  const frame = currentFrameIndex(); // (app.js)
   if (frame === drawnFrame) return;
   drawnFrame = frame;
-  for (const { star, marker, hit, label, average, radius, fontSize, group } of starMarkers) {
+  placeMarkers(starMarkers, frame);
+  updateStarInfoFrame();
+}
+
+// ---- The same stars in the zoom (app.js calls these while it is open) ----
+const zoomStarOverlay = document.querySelector("#zoom-star-overlay");
+let zoomMarkers = [];
+let zoomDrawnFrame;
+
+// When the zoom opens: the same stars, at the zoom's scale
+function buildZoomStarOverlay(pxPerGifPx) {
+  const metadata = shownMetadata();
+  zoomMarkers = metadata && Object.values(starLayersOn).some(Boolean)
+    ? drawStarLayers(zoomStarOverlay, metadata, pxPerGifPx, (star, catalog) => {
+      zoomDialog.close(); // the star card is on the page, under the zoom
+      showStarInfo(star, catalog);
+    })
+    : [];
+  if (!zoomMarkers.length) zoomStarOverlay.replaceChildren();
+  zoomStarOverlay.toggleAttribute("hidden", zoomMarkers.length === 0);
+  zoomDrawnFrame = undefined;
+  placeZoomStarMarkers();
+}
+
+function placeZoomStarMarkers() {
+  const frame = currentFrameIndex();
+  if (!zoomMarkers.length || frame === zoomDrawnFrame) return;
+  zoomDrawnFrame = frame;
+  placeMarkers(zoomMarkers, frame);
+}
+
+// Puts the markers on a frame (null = at their average positions).
+function placeMarkers(markers, frame) {
+  for (const { star, marker, hit, label, average, radius, fontSize, group } of markers) {
     const position = frame === null ? average : star.xy[frame];
     group.classList.toggle("star-outside", !position); // outside the image in this frame
     if (!position) continue;
@@ -323,7 +361,6 @@ function placeStarMarkers() {
       label.setAttribute("font-size", fontSize);
     }
   }
-  updateStarInfoFrame();
 }
 
 // Every animation frame: rebuild if needed (cheap check), then follow the GIF.

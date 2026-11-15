@@ -61,8 +61,8 @@
      <span>Pin arrow while rotating</span>
    </div>
 
-    <label for="speed">Speed <output id="speed-value" for="speed">500 ms</output></label>
-    <input id="speed" type="range" min="25" max="1000" step="1" value="500">
+    <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
+    <input id="speed" type="range" min="25" max="1000" step="1" value="250">
 
         <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">250 px</output></label>
 <input id="pixel-size" type="range" min="50" max="500" step="1" value="250">
@@ -107,7 +107,7 @@
             height="333"
             draggable="false"
           />          <canvas id="paused-frame" hidden></canvas>
-          <svg id="star-overlay" aria-label="Known stars" hidden></svg>
+          <svg id="star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg>
           <div id="throbber" class="throbber" hidden>
             <span class="spinner" aria-hidden="true"></span>
             <span id="throbber-text" role="status">Working…</span>
@@ -167,7 +167,7 @@
 <div id="zoom-selection" hidden></div>
 <dialog id="zoom-dialog" aria-label="Zoomed image">
   <button id="zoom-close" type="button" aria-label="Close zoom">×</button>
-  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"></div>
+  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"><canvas id="zoom-frame" hidden></canvas><svg id="zoom-star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg></div>
 </dialog>
 </body>
 </html>
