@@ -11,14 +11,10 @@ Sources (all independent of IRSA, which also serves the SPHEREx images):
     VizieR    Gaia DR3 (I/355/gaiadr3) and CatWISE2020 (II/365/catwise),
               CDS Strasbourg first, the CfA (Harvard) mirror as backup
     SIMBAD    common names ("Barnard's star", "HD 163774") and object types,
-<<<<<<< HEAD
-              same two hosts
-=======
               same two hosts; and the known fast movers (proper motion >=
               FAST_MAS_YR) with literature motions - right also where Gaia sees
               nothing and CatWISE's fit fails (WISE 0855-0714: CatWISE says
               0.27"/yr, really 8.1"/yr)
->>>>>>> origin/star-overlays
 
 Which stars:
     bright    the N_BRIGHT brightest in the frame (Gaia: G, CatWISE: W1)
@@ -32,12 +28,8 @@ Which stars:
               far better motions - CatWISE adds what Gaia can't see (brown dwarfs).
 
 fetch() talks to the servers (cached, never expires: the catalogues don't
-<<<<<<< HEAD
-change), place() puts the stars on the frames (fast, no network).
-=======
 change; Gaia/CatWISE files carry the row limit in their name, so a new N_BRIGHT
 fetches again), place() puts the stars on the frames (fast, no network).
->>>>>>> origin/star-overlays
 """
 
 from __future__ import annotations
@@ -63,13 +55,8 @@ SIMBAD_HOSTS = ["https://simbad.cds.unistra.fr", "https://simbad.cfa.harvard.edu
 LINK_VIZIER = VIZIER_HOSTS[0]  # links for the user: the main site
 LINK_SIMBAD = SIMBAD_HOSTS[0]
 
-<<<<<<< HEAD
-N_BRIGHT = 30               # brightest stars per catalogue in the frame
-N_FAST = 10                 # fast movers per catalogue in the frame
-=======
 N_BRIGHT = 50               # brightest stars per catalogue in the frame
 N_FAST = 30                 # fast movers per catalogue in the frame
->>>>>>> origin/star-overlays
 FAST_MAS_YR = 200.0         # "fast" from this proper motion on
 CATWISE_MIN_PM_SIGMA = 10.0  # CatWISE fast movers: motion >= this many sigma
 CATWISE_MIN_FAST_COLOR = 0.4  # W1-W2: redder than normal stars (brown dwarfs: 0.3 .. 3+)
@@ -79,20 +66,14 @@ MATCH_ARCSEC = 3.0          # CatWISE <-> Gaia: same star within this distance
 TWIN_ARCSEC = 10.0          # CatWISE lists some fast movers twice, a few " apart: show one
 MARGIN_ARCMIN = 2.0         # search beyond the frame: fast stars may move into it
 QUERY_ROWS = 2 * N_BRIGHT   # the search circle is ~2x the frame's area
-<<<<<<< HEAD
-=======
 ROW_LIMITED = ("gaia_dr3", "catwise2020")  # their "brightest" query stops at QUERY_ROWS
 OLD_QUERY_ROWS = 60         # cache files without "_r<rows>" in their name were fetched with this
->>>>>>> origin/star-overlays
 HEDGE_AFTER_S = 4.0         # no answer yet -> also ask the next host
 TIMEOUT_S = (5.0, 30.0)     # connect, read
 PIXEL_SCALE_ARCSEC = 6.15   # SPHEREx (same as backend.PIXEL_SCALE_ARCSEC)
 
 GAIA_COLUMNS = "Source,RA_ICRS,DE_ICRS,Gmag,BPmag,RPmag,Plx,e_Plx,pmRA,pmDE,PM"
-<<<<<<< HEAD
-=======
 SIMBAD_BANDS = ("J", "H", "K", "G")  # magnitudes taken from SIMBAD for its fast movers
->>>>>>> origin/star-overlays
 
 MJD_J2000 = 51544.5
 DAYS_PER_YEAR = 365.25
@@ -116,8 +97,6 @@ CATALOGS = {
         "mag_system": "Vega",
         "sort_mag": "W1",
     },
-<<<<<<< HEAD
-=======
     "simbad_movers": {
         "label": "Known fast movers (SIMBAD)",
         "source": "SIMBAD (proper motion >= 200 mas/yr)",
@@ -127,7 +106,6 @@ CATALOGS = {
         "sort_mag": "J",
         "n_bright": 0,  # fast movers only, no "brightest N"
     },
->>>>>>> origin/star-overlays
 }
 
 
@@ -342,10 +320,6 @@ def search_radius_arcmin(pixels: int) -> float:
     return pixels * PIXEL_SCALE_ARCSEC / 60 / 2 * math.sqrt(2) + MARGIN_ARCMIN
 
 
-<<<<<<< HEAD
-def _cache_path(cache_dir: Path, catalog: str, ra: float, dec: float, pixels: int) -> Path:
-    return cache_dir / "catalogs" / catalog / f"ra{ra:09.5f}_dec{dec:+09.5f}_p{pixels}.json"
-=======
 def _cache_name(ra: float, dec: float, pixels: int) -> str:
     return f"ra{ra:09.5f}_dec{dec:+09.5f}_p{pixels}"
 
@@ -378,7 +352,6 @@ def _older_cache(cache_dir: Path, catalog: str, ra: float, dec: float, pixels: i
                         catalog, rows(path))
             return stars
     return None
->>>>>>> origin/star-overlays
 
 
 def _query_gaia(ra: float, dec: float, radius: float) -> list[dict]:
@@ -417,8 +390,6 @@ def _query_catwise(ra: float, dec: float, radius: float) -> list[dict]:
     return list(stars.values())
 
 
-<<<<<<< HEAD
-=======
 def _query_simbad_movers(ra: float, dec: float, radius_arcmin: float) -> list[dict]:
     """Every object SIMBAD knows in the circle moving >= FAST_MAS_YR (often none:
     an empty list is a normal answer here and gets cached)."""
@@ -457,7 +428,6 @@ def _query_simbad_movers(ra: float, dec: float, radius_arcmin: float) -> list[di
     return list(stars.values())
 
 
->>>>>>> origin/star-overlays
 def _drop_glow_fakes(catwise: list[dict], gaia: list[dict]) -> None:
     """CatWISE 'fast movers' inside a bright Gaia star's glow are fakes: not fast_ok.
     The glow is measured by RP (red): WISE sees in the infrared, where red stars
@@ -499,16 +469,10 @@ def _add_names(stars_by_catalog: dict[str, list[dict]]) -> None:
 
 
 def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str, list[dict] | None], bool]:
-<<<<<<< HEAD
-    """Candidate stars per catalogue -> ({catalog: stars, or None if its server failed},
-    complete). complete = nothing failed (not even the names), so a result built
-    from this may be kept for reuse. Cached per catalogue once complete."""
-=======
     """Candidate stars per catalogue -> ({catalog: stars, or None if its server failed
     and nothing older is cached}, complete). complete = nothing failed (not even the
     names), so a result built from this may be kept for reuse. Cached per catalogue
     once complete."""
->>>>>>> origin/star-overlays
     radius = search_radius_arcmin(pixels)
     out: dict[str, list[dict] | None] = {}
     todo = {}
@@ -517,12 +481,8 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
         if cached is not None:
             out[name] = cached
         else:
-<<<<<<< HEAD
-            query = _query_gaia if name == "gaia_dr3" else _query_catwise
-=======
             query = {"gaia_dr3": _query_gaia, "catwise2020": _query_catwise,
                      "simbad_movers": _query_simbad_movers}[name]
->>>>>>> origin/star-overlays
             todo[name] = _in_background(lambda q=query: q(ra, dec, radius))
     if not todo:
         return out, True
@@ -534,19 +494,11 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
             fresh[name] = future.result()
         except EmptyAnswer as exc:
             log.warning("star overlay %s: %s", name, exc)
-<<<<<<< HEAD
-            out[name] = []
-            complete = False
-        except Exception as exc:
-            log.warning("star overlay %s: catalogue query failed (%s)", name, exc)
-            out[name] = None
-=======
             out[name] = _older_cache(cache_dir, name, ra, dec, pixels) or []
             complete = False
         except Exception as exc:
             log.warning("star overlay %s: catalogue query failed (%s)", name, exc)
             out[name] = _older_cache(cache_dir, name, ra, dec, pixels)
->>>>>>> origin/star-overlays
             complete = False
 
     gaia = out["gaia_dr3"] if "gaia_dr3" in out else fresh.get("gaia_dr3")  # cached, failed or fresh
@@ -577,11 +529,7 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
 # --------------------------------------------------------------------------- #
 # place: which stars are shown, and where on each frame (no network)
 # --------------------------------------------------------------------------- #
-<<<<<<< HEAD
-def _links(star: dict) -> dict[str, str]:
-=======
 def _links(star: dict) -> dict[str, str | None]:
->>>>>>> origin/star-overlays
     if star.get("simbad_id"):
         simbad = f"{LINK_SIMBAD}/simbad/sim-id?" + urllib.parse.urlencode({"Ident": star["simbad_id"]})
     else:  # SIMBAD doesn't know it by name: search around its position
@@ -624,11 +572,7 @@ def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
             return m if m is not None else 99.0
 
         bright = {id(s) for s, _ in sorted((i for i in shown if i[0]["mag"][info["sort_mag"]] is not None),
-<<<<<<< HEAD
-                                          key=mag)[:N_BRIGHT]}
-=======
                                           key=mag)[:info.get("n_bright", N_BRIGHT)]}
->>>>>>> origin/star-overlays
         fast_ids: list[int] = []
         fast_pos: list[tuple[float, float]] = []
         for s, _ in sorted((i for i in shown if i[0]["fast_ok"] and _total_pm(i[0]) >= FAST_MAS_YR),
@@ -657,30 +601,18 @@ def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
                 "mag": s["mag"],
                 "pm_mas_yr": pm,
             }
-<<<<<<< HEAD
-            if name == "gaia_dr3":
-                entry.update(parallax_mas=s["parallax_mas"], distance_ly=s["distance_ly"])
-            entry.update(links=_links(s), xy=xy)
-            out_stars.append(entry)
-=======
             if "parallax_mas" in s:  # Gaia and SIMBAD
                 entry.update(parallax_mas=s["parallax_mas"], distance_ly=s["distance_ly"])
             entry.update(links=_links(s), xy=xy)
             out_stars.append(entry)
         n_bright = info.get("n_bright", N_BRIGHT)
->>>>>>> origin/star-overlays
         result[name] = {
             "label": info["label"],
             "source": info["source"],
             "epoch": info["epoch"],
             "mag_system": info["mag_system"],
-<<<<<<< HEAD
-            "selection": (f"{N_BRIGHT} brightest ({info['sort_mag']}) in the frame + up to {N_FAST} "
-                          f"with proper motion >= {FAST_MAS_YR:g} mas/yr"),
-=======
             "selection": ((f"{n_bright} brightest ({info['sort_mag']}) in the frame + " if n_bright else "")
                           + f"up to {N_FAST} with proper motion >= {FAST_MAS_YR:g} mas/yr"),
->>>>>>> origin/star-overlays
             "stars": out_stars,
         }
     return result

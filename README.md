@@ -25,16 +25,11 @@ cd SpaceAppChallenge
 ./start.sh
 ```
 
-<<<<<<< HEAD
-On the first start, `start.sh` creates `python-backend/.venv` with `python3`
-and installs `python-backend/requirements.txt`, which takes a few minutes.
-=======
 Then open the provided link. Stop with `Ctrl+C`.
 
 On the first start, `start.sh` creates `python-backend/.venv` with `python3`
 and installs `python-backend/requirements.txt`, which takes a few minutes.
 After that it only reinstalls when the requirements change.
->>>>>>> origin/star-overlays
 
 - **Another port:** `PORT=8080 ./start.sh`
 - **Your `python3` is older than 3.11:** create the venv with a newer Python
@@ -44,30 +39,14 @@ After that it only reinstalls when the requirements change.
   ./start.sh
   ```
 
-<<<<<<< HEAD
-=======
 The server only listens on `127.0.0.1` (your own computer).
 
->>>>>>> origin/star-overlays
 ## Usage
 
 1. Enter **Right Ascension** and **Declination**: decimal degrees
    (`269.45404`, `4.693388`) or sexagesimal (`17:57:48.97`, `+04:41:36.2`;
    with colons RA is in hours). You can also click the globe; turn that on in
    Settings.
-<<<<<<< HEAD
-2. **Settings:** speed (ms per frame), cutout size (50–500 px),
-   invert, show difference images.
-3. **Submit.** A new spot can take a few minutes (downloads). The same request
-   again is near instant (cache).
-4. **Player:** stop, play and step frame by frame. Click or drag on the image
-   to zoom.
-5. **Stars:** "Gaia stars" and "WISE sources" in Settings. They follow the
-   frame on screen; fast movers get their track and name. Click a star for
-   details: magnitudes, distance, SIMBAD/VizieR links, and its position, date
-   and movement in the frame on screen.
-
-=======
 2. **Settings:** speed (ms per frame), cutout size (50–500 px, 1 px = 6.15″),
    invert, show difference images.
 3. **Submit.** A new spot can take a few minutes (downloads). The same request
@@ -82,7 +61,6 @@ The server only listens on `127.0.0.1` (your own computer).
 Example: Barnard's star, RA `269.45404`, Dec `4.693388`, 250 px. It creeps
 about 1.7 px north per year across the frames.
 
->>>>>>> origin/star-overlays
 ## How it works
 
 ```
@@ -132,10 +110,7 @@ Output goes to `Cache/usr/<UUID>/`: `frame_000.jpg …` (oldest first),
 | SPHEREx images: the files | AWS bucket `nasa-irsa-spherex`, IRSA as fallback |
 | Star overlays | Gaia DR3 (`I/355/gaiadr3`) and CatWISE2020 (`II/365/catwise`) via VizieR |
 | Star names, types | SIMBAD |
-<<<<<<< HEAD
-=======
 | Known fast movers | SIMBAD (proper motion ≥ 200 mas/yr) |
->>>>>>> origin/star-overlays
 | Earth texture | three.js example textures |
 
 VizieR and SIMBAD are run by CDS (Strasbourg); the backend falls back to their
