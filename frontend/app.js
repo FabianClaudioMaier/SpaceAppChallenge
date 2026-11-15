@@ -1113,6 +1113,7 @@ function showPaused(paused) {
   isPaused = paused;
   playPauseButton.classList.toggle("paused", paused); // CSS swaps the icon
   playPauseButton.setAttribute("aria-label", paused ? "Play" : "Stop");
+  playPauseButton.dataset.tooltip = paused ? "Play" : "Pause"; // text of the hover box
 }
 
 image.addEventListener("load", () => {
