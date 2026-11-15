@@ -476,6 +476,17 @@ p {
   margin-inline: auto;
 }
 
+/* Slightly darker box behind the text under the globe, for readability over
+   the starry background. No fixed height: it grows with whatever text is in it
+   (status messages, the "Apply coordinates" button, ...). */
+.globe-bottom {
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: rgba(4, 12, 28, 0.55);
+}
+
 .movement-question p {
   margin: 10px 0 22px;
 }
