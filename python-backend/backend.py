@@ -28,9 +28,9 @@ What happens:
          meta.json                           status, timestamps, frame info, catalogue links
     3. the folder is renamed to Cache/usr/<UUID>/ and the program exits
     The backend never deletes anything in Cache/usr/ - the middleware does that.
-    On an error the folder is renamed as well, with meta.json["status"] == "error".
+    On an error the folder is renamed as well, but without meta.json.
 
-Exit codes (the description goes to stderr and into meta.json["error"]):
+Exit codes (the description goes to stderr as "error: ..."):
     0  success
     1  invalid arguments
     2  no SPHEREx images cover this position
@@ -40,7 +40,8 @@ Exit codes (the description goes to stderr and into meta.json["error"]):
 
 Pipeline:
     build_frames_cached  an identical earlier request is just copied (Cache/results/)
-    find_exposures       IRSA query: every SPHEREx image that covers (ra, dec)
+    find_all_exposures   IRSA query: every SPHEREx image that covers (ra, dec), in the
+                         newest data release + all quick releases (the newest data)
     coverage_of          which images cover the whole frame (headers only)
     plan_visit_frames    one frame per SPHEREx visit
     read_cutout          download only the part of each image the frame needs
@@ -102,15 +103,15 @@ BACKEND_DIR = Path(__file__).resolve().parent
 
 # CACHE LAYOUT
 #   Cache/
-#     queries/collections.json                    newest SPHEREx release (24h TTL)
+#     queries/collections.json                    which IRSA collections to search (24h TTL)
 #     queries/<collection>/<coord>.json           image list for a position (24h TTL)
 #     headers/<collection>/<obs_id>/D<n>.json      IMAGE header of one image (any position)
 #     cutouts/<collection>/<obs_id>/D<n>_<coord>_p<pixels>.npz
 #                                                 the part of one image a frame needs
 #                                                 (_h<half>.npz: older squares, still reused)
-#     coverage/<collection>/<coord>_p<pixels>.json
+#     coverage/<coord>_p<pixels>.json
 #                                                 how much of the frame each image covers
-#     results/<collection>/<coord>_p<pixels>/     finished frames of an earlier identical
+#     results/<collections>/<coord>_p<pixels>/    finished frames of an earlier identical
 #                                                 request (+ result.json), see build_frames_cached
 #     results/.staging_<uuid>/                    a stored result being copied out (temporary)
 #     usr/.pending_<uuid>/                        job still running
@@ -119,9 +120,13 @@ CACHE_DIR = BACKEND_DIR / "Cache"
 USR_DIR = CACHE_DIR / "usr"
 QUERY_TTL_S = 24 * 3600
 
-# Used if IRSA can't be asked for the newest "spherex_drN" collection.
-DEFAULT_COLLECTION = "spherex_dr1"
-COLLECTION_RE = re.compile(r"^spherex_dr(\d+)$")
+# Which IRSA collections are searched: the newest data release ("spherex_drN":
+# reprocessed, complete up to some date) plus all quick releases ("spherex_qrN":
+# the newest data, published as it comes in). E.g. at Barnard's star DR1 ends on
+# 2026-05-05 and QR3 has 2026-08-16 .. 09-22 - without QR3 a whole pass is missing.
+# ("_deep" / "_cube" collections are other products and not used.)
+DEFAULT_COLLECTIONS = ["spherex_dr1"]  # if IRSA can't be asked (and nothing is cached)
+RELEASE_RE = re.compile(r"^spherex_(dr|qr)(\d+)$")
 
 PIXEL_SCALE_ARCSEC = 6.15
 MIN_PIXELS, MAX_PIXELS = 3, 2040  # 2040 = width of one SPHEREx detector
@@ -299,30 +304,67 @@ class Exposure:
     s3_url: str    # same file on the public AWS bucket (faster, usually up)
     wl_min_um: float
     wl_max_um: float
+    collection: str  # IRSA collection it was found in (data release or quick release)
 
 
-def latest_collection() -> str:
-    """Newest SPHEREx data release at IRSA, so new releases are picked up automatically."""
+def collections() -> list[str]:
+    """IRSA collections to search (see RELEASE_RE): the newest data release first,
+    then the quick releases. Looked up once a day, so new releases are picked up."""
     path = CACHE_DIR / "queries" / "collections.json"
     cached = _read_json(path, QUERY_TTL_S)
-    if cached:
-        return cached["latest"]
+    if cached and cached.get("use"):
+        return cached["use"]
     try:
-        names = Irsa.list_collections(servicetype="SIA")["collection"]
-        releases = [(int(m.group(1)), n) for n in names if (m := COLLECTION_RE.match(str(n)))]
-        latest = max(releases)[1] if releases else DEFAULT_COLLECTION
-    except Exception as exc:  # network trouble -> fall back, don't cache
-        log.warning("could not list IRSA collections (%s); using %s", exc, DEFAULT_COLLECTION)
-        return DEFAULT_COLLECTION
-    _write_json(path, {"latest": latest, "checked": Time.now().isot})
-    return latest
+        names = [str(n) for n in Irsa.list_collections(servicetype="SIA")["collection"]]
+        found = [(m[1], int(m[2]), n) for n in names if (m := RELEASE_RE.match(n))]
+        newest_dr = max(((num, n) for kind, num, n in found if kind == "dr"), default=None)
+        quick = [n for _, n in sorted((num, n) for kind, num, n in found if kind == "qr")]
+        use = ([newest_dr[1]] if newest_dr else []) + quick or DEFAULT_COLLECTIONS
+    except Exception as exc:  # network trouble: the last known list (even if old), don't cache
+        use = (_read_json(path) or {}).get("use") or DEFAULT_COLLECTIONS
+        log.warning("could not list IRSA collections (%s); using %s", exc, use)
+        return use
+    _write_json(path, {"use": use, "checked": Time.now().isot})
+    return use
+
+
+def find_all_exposures(ra: float, dec: float) -> tuple[list[Exposure], list[str]]:
+    """Every image covering (ra, dec) in all collections() -> (images, collections).
+
+    An image in several collections (a quick-release image later reprocessed
+    into a data release) is kept once, from the first one: the data release.
+    A collection whose search fails is skipped, as long as another one answered.
+    The collections are searched at the same time (each search is a ~2-3 s wait
+    for IRSA; one after the other, every quick release would add that).
+    """
+    names = collections()
+    seen: set[tuple[str, int]] = set()
+    found: list[Exposure] = []
+    errors: list[BackendError] = []
+    with ThreadPoolExecutor(len(names)) as pool:
+        futures = [pool.submit(find_exposures, ra, dec, name) for name in names]
+    for name, future in zip(names, futures):  # in order: the data release first
+        try:
+            exposures = future.result()
+        except BackendError as exc:
+            log.warning("searching %s failed, using the other collections: %s", name, exc)
+            errors.append(exc)
+            continue
+        for e in exposures:
+            if (e.obs_id, e.detector) not in seen:
+                seen.add((e.obs_id, e.detector))
+                found.append(e)
+    if errors and len(errors) == len(names):
+        raise errors[0]
+    found.sort(key=lambda e: (e.mjd, e.detector))
+    return found, names
 
 
 def find_exposures(ra: float, dec: float, collection: str) -> list[Exposure]:
     path = CACHE_DIR / "queries" / collection / f"{_coord_key(ra, dec)}.json"
     cached = _read_json(path, QUERY_TTL_S)
     if cached is not None:
-        return [Exposure(**e) for e in cached]
+        return [Exposure(**{**e, "collection": collection}) for e in cached]
 
     try:
         t = Irsa.query_sia(pos=(SkyCoord(ra * u.deg, dec * u.deg), 1 * u.arcsec),
@@ -342,6 +384,7 @@ def find_exposures(ra: float, dec: float, collection: str) -> list[Exposure]:
             s3_url=f"https://{aws['bucket_name']}.s3.amazonaws.com/{aws['key']}",
             wl_min_um=float(row["em_min"]) * 1e6,
             wl_max_um=float(row["em_max"]) * 1e6,
+            collection=collection,
         ))
     exposures.sort(key=lambda e: (e.mjd, e.detector))
     _write_json(path, [asdict(e) for e in exposures])
@@ -373,7 +416,7 @@ def frame_coverage(hdr: fits.Header, test_ra: np.ndarray, test_dec: np.ndarray) 
 COVERAGE_TASK_IMAGES = 10  # images per worker-process task in coverage_of
 
 
-def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int, collection: str,
+def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int,
                 threads: ThreadPoolExecutor, processes: ProcessPoolExecutor
                 ) -> dict[tuple[str, int], float | None]:
     """How much of the frame each image covers (None = header not available).
@@ -388,14 +431,14 @@ def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int, c
     The answers are cached per position + frame size in Cache/coverage/; only
     images not in it are computed. "Header not available" is not cached (retried).
     """
-    path = CACHE_DIR / "coverage" / collection / f"{_coord_key(ra, dec)}_p{pixels}.json"
+    path = CACHE_DIR / "coverage" / f"{_coord_key(ra, dec)}_p{pixels}.json"
     known: dict[tuple[str, int], float] = {(o, d): c for o, d, c in (_read_json(path) or [])}
     _touch(path)
     todo = [e for e in exposures if (e.obs_id, e.detector) not in known]
     if todo:
         def fetch_header(e: Exposure) -> bool:
             try:
-                image_header(e, collection)
+                image_header(e)
                 return True
             except Exception as exc:
                 log.warning("no header for %s D%d: %s", e.obs_id, e.detector, exc)
@@ -406,8 +449,8 @@ def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int, c
             return [(images[i:i + n], processes.submit(_coverage_task, images[i:i + n]))
                     for i in range(0, len(images), n)]
 
-        cached = [e for e in todo if _header_path(e, collection).exists()]
-        missing = [e for e in todo if not _header_path(e, collection).exists()]
+        cached = [e for e in todo if _header_path(e).exists()]
+        missing = [e for e in todo if not _header_path(e).exists()]
         tasks = submit(cached)  # computed while the missing headers download
         tasks += submit([e for e, ok in zip(missing, threads.map(fetch_header, missing)) if ok])
         new = {(e.obs_id, e.detector): c for images, f in tasks
@@ -800,18 +843,18 @@ def _fetch_image_header(url: str) -> tuple[fits.Header, int]:
     return hdr, data_offset
 
 
-def _header_path(exp: Exposure, collection: str) -> Path:
-    return CACHE_DIR / "headers" / collection / exp.obs_id / f"D{exp.detector}.json"
+def _header_path(exp: Exposure) -> Path:
+    return CACHE_DIR / "headers" / exp.collection / exp.obs_id / f"D{exp.detector}.json"
 
 
-def image_header(exp: Exposure, collection: str, fetch: bool = True) -> tuple[fits.Header, int] | None:
+def image_header(exp: Exposure, fetch: bool = True) -> tuple[fits.Header, int] | None:
     """IMAGE header of one exposure + its data offset, cached in Cache/headers/.
 
     A header doesn't depend on the position looked at, so once fetched it is
     reused for every request (and saves that request when downloading pixels).
     fetch=False: only look in the cache (None if not there).
     """
-    path = _header_path(exp, collection)
+    path = _header_path(exp)
     cached = _read_json(path)
     if cached is not None:
         _touch(path)
@@ -975,11 +1018,10 @@ def _subtract_sky_level(data: np.ndarray) -> np.ndarray:
     return data
 
 
-def _download_cutout(exp: Exposure, ra: float, dec: float, pixels: int,
-                     collection: str) -> Cutout | None:
+def _download_cutout(exp: Exposure, ra: float, dec: float, pixels: int) -> Cutout | None:
     """Download the part of one image the frame needs; None if the frame is off this detector."""
     ring = frame_ring(ra, dec, pixels)
-    hdr, data_offset = image_header(exp, collection)  # usually cached already (coverage_of)
+    hdr, data_offset = image_header(exp)  # usually cached already (coverage_of)
     fp = frame_footprint(hdr, ring)
     if fp is None:
         return None
@@ -1098,7 +1140,7 @@ def _bigger_cutouts(folder: Path, detector: int, coord: str, pixels: int) -> lis
     return [path for _, path in sorted(found)]
 
 
-def read_cutout(exp: Exposure, ra: float, dec: float, pixels: int, collection: str) -> Cutout | None:
+def read_cutout(exp: Exposure, ra: float, dec: float, pixels: int) -> Cutout | None:
     """The part of one image a `pixels` frame needs (see frame_footprint), cached.
 
     None if the frame is off this detector; raises DownloadError if unreachable.
@@ -1108,7 +1150,7 @@ def read_cutout(exp: Exposure, ra: float, dec: float, pixels: int, collection: s
     down instead of downloading again - changing the frame size to something
     smaller downloads nothing.
     """
-    folder = CACHE_DIR / "cutouts" / collection / exp.obs_id
+    folder = CACHE_DIR / "cutouts" / exp.collection / exp.obs_id
     coord = _coord_key(ra, dec)
     path = folder / f"D{exp.detector}_{coord}_p{pixels}.npz"
     if path.exists():
@@ -1138,7 +1180,7 @@ def read_cutout(exp: Exposure, ra: float, dec: float, pixels: int, collection: s
         break
     else:
         t0 = time.monotonic()
-        cut = _download_cutout(exp, ra, dec, pixels, collection)
+        cut = _download_cutout(exp, ra, dec, pixels)
         if cut is not None:
             _stats.count("cutout_downloaded")
             _stats.image(time.monotonic() - t0)
@@ -1477,13 +1519,13 @@ def catalogue_links(ra: float, dec: float, pixels: int) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # Workers: download one image (thread), then line it up (process)
 # --------------------------------------------------------------------------- #
-def _download_one(exp: Exposure, ra: float, dec: float, pixels: int, collection: str) -> tuple:
+def _download_one(exp: Exposure, ra: float, dec: float, pixels: int) -> tuple:
     """Runs in a download thread: make sure the image's part is in the cache.
 
     -> ("ok",) | ("off_chip",) | ("failed", reason)
     """
     try:
-        cut = read_cutout(exp, ra, dec, pixels, collection)
+        cut = read_cutout(exp, ra, dec, pixels)
     except DownloadError as exc:
         return ("failed", str(exc))
     return ("off_chip",) if cut is None else ("ok",)
@@ -1523,12 +1565,12 @@ def _download_then_align(downloads: ThreadPoolExecutor, aligners: ProcessPoolExe
 _JOB: dict = {}  # per worker process: what every task of this job needs
 
 
-def _init_worker(ra: float, dec: float, pixels: int, collection: str) -> None:
+def _init_worker(ra: float, dec: float, pixels: int) -> None:
     """Runs once when each worker process starts.
 
     Rebuilding the alignment grid here is cheaper than sending it with every task.
     """
-    _JOB.update(ra=ra, dec=dec, pixels=pixels, collection=collection,
+    _JOB.update(ra=ra, dec=dec, pixels=pixels,
                 align=make_alignment_grid(make_grid_wcs(ra, dec, pixels), pixels))
 
 
@@ -1540,7 +1582,7 @@ def _coverage_task(images: list[Exposure]) -> list[float | None]:
         j["test_points"] = frame_test_points(j["ra"], j["dec"], j["pixels"])
     out = []
     for e in images:
-        header = image_header(e, j["collection"], fetch=False)
+        header = image_header(e, fetch=False)
         out.append(None if header is None else frame_coverage(header[0], *j["test_points"]))
     return out
 
@@ -1554,7 +1596,7 @@ def _load_one(exp: Exposure) -> tuple:
     """
     j = _JOB
     try:
-        cut = read_cutout(exp, j["ra"], j["dec"], j["pixels"], j["collection"])
+        cut = read_cutout(exp, j["ra"], j["dec"], j["pixels"])
     except DownloadError as exc:
         return ("failed", str(exc))
     if cut is None:
@@ -1566,26 +1608,26 @@ def _load_one(exp: Exposure) -> tuple:
 # --------------------------------------------------------------------------- #
 # The job: build all frames into out_dir
 # --------------------------------------------------------------------------- #
-def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> dict:
-    """Write frame_*.jpg into out_dir and return the metadata (without status).
+def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dict, int]:
+    """Write frame_*.jpg into out_dir -> (metadata without status, number of failed images).
 
     Logs a summary of where the time went at the end (see JobStats).
     """
     t_start = time.monotonic()
-    collection = latest_collection()
-    exposures = find_exposures(ra, dec, collection)
+    exposures, searched = find_all_exposures(ra, dec)
+    collection = "+".join(searched)
     _stats.phases["search"] = time.monotonic() - t_start
     if not exposures:
         raise BackendError(EXIT_NO_DATA, f"no {collection} images cover RA={ra:.5f} Dec={dec:+.5f}")
 
-    job = (ra, dec, pixels, collection)
+    job = (ra, dec, pixels)
     frames, frame_meta, n_failed = [], [], 0
     # The worker processes start right away: they first help with coverage_of,
     # and are up and running by the time the first images are downloaded.
     with ThreadPoolExecutor(DOWNLOAD_THREADS) as downloads, \
             ProcessPoolExecutor(WORKER_PROCESSES, initializer=_init_worker, initargs=job) as aligners:
         t_coverage = time.monotonic()
-        coverage = coverage_of(exposures, ra, dec, pixels, collection, downloads, aligners)
+        coverage = coverage_of(exposures, ra, dec, pixels, downloads, aligners)
         t_images = time.monotonic()
         _stats.phases["coverage"] = t_images - t_coverage
         n_full = sum(1 for c in coverage.values() if c is not None and c >= FULL_COVERAGE)
@@ -1654,7 +1696,8 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> dict:
         meta["difference_image"] = diff_names[i] if diff_names else None
 
     return {
-        "collection": collection,
+        "collections": searched,
+        "images_per_collection": {n: sum(e.collection == n for e in exposures) for n in searched},
         "pixel_scale_arcsec": PIXEL_SCALE_ARCSEC,
         "colour": ({"red": "D4-D6 (2.4-5.0 um)", "green": "average of red and blue",
                     "blue": "D1-D3 (0.75-2.4 um)"} if COLOR_FRAMES else None),
@@ -1662,10 +1705,9 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> dict:
         "timestamps": [m["timestamp"] for m in frame_meta],
         "difference_images": diff_names,
         "frames": frame_meta,
-        "images_failed": n_failed,
         "visits_not_used": bins_skipped,
         "links": catalogue_links(ra, dec, pixels),
-    }
+    }, n_failed
 
 
 # --------------------------------------------------------------------------- #
@@ -1689,7 +1731,7 @@ def _result_fingerprint(exposures: list[Exposure]) -> str:
     for source in (Path(__file__), Path(detectors.__file__)):
         h.update(source.read_bytes())
     for e in sorted(exposures, key=lambda e: (e.obs_id, e.detector)):
-        h.update(f"{e.obs_id}/{e.detector};".encode())
+        h.update(f"{e.collection}/{e.obs_id}/{e.detector};".encode())
     return h.hexdigest()
 
 
@@ -1755,19 +1797,20 @@ def save_result(meta: dict, out_dir: Path, collection: str, ra: float, dec: floa
 
 def build_frames_cached(ra: float, dec: float, pixels: int, out_dir: Path, user_id: str) -> dict:
     """build_frames, but an identical earlier request is copied from Cache/results/."""
-    collection = latest_collection()
-    fingerprint = _result_fingerprint(find_exposures(ra, dec, collection))
+    exposures, names = find_all_exposures(ra, dec)
+    collection = "+".join(names)  # e.g. "spherex_dr1+spherex_qr3"
+    fingerprint = _result_fingerprint(exposures)
     meta = load_result(collection, ra, dec, pixels, fingerprint, out_dir, user_id)
     if meta is not None:
         log.info("identical request done before: result copied from %s",
                  _result_dir(collection, ra, dec, pixels))
-        return {**meta, "from_cache": True}
-    meta = build_frames(ra, dec, pixels, out_dir)
-    if meta["images_failed"] == 0:
+        return meta
+    meta, n_failed = build_frames(ra, dec, pixels, out_dir)
+    if n_failed == 0:
         save_result(meta, out_dir, collection, ra, dec, pixels, fingerprint)
     else:
-        log.info("result not kept for reuse: %d images failed", meta["images_failed"])
-    return {**meta, "from_cache": False}
+        log.info("result not kept for reuse: %d images failed", n_failed)
+    return meta
 
 
 # --------------------------------------------------------------------------- #
@@ -1858,21 +1901,23 @@ def main(argv: list[str]) -> int:
         print(f"error: {pending} already exists (job running or crashed)", file=sys.stderr)
         return EXIT_FOLDER_EXISTS
 
+    # meta.json is only written on success; on an error the message goes to stderr only.
     t0 = time.time()
+    meta, error, exit_code = None, None, EXIT_OK
     try:
         meta = build_frames_cached(ra, dec, pixels, pending, user_id)
-        meta = {"status": "ok", "exit_code": EXIT_OK, **meta}
     except BackendError as exc:
-        meta = {"status": "error", "exit_code": exc.code, "error": str(exc)}
+        error, exit_code = str(exc), exc.code
     except MemoryError:
-        meta = {"status": "error", "exit_code": EXIT_UNEXPECTED,
-                "error": f"not enough memory for PIXELS={pixels}"}
+        error, exit_code = f"not enough memory for PIXELS={pixels}", EXIT_UNEXPECTED
     except Exception as exc:
         log.exception("unexpected error")
-        meta = {"status": "error", "exit_code": EXIT_UNEXPECTED,
-                "error": f"{type(exc).__name__}: {exc}"}
-    meta.update(dec=dec, ra=ra, pixels=pixels, uuid=user_id, seconds=round(time.time() - t0, 1))
-    _write_json(pending / "meta.json", meta)
+        error, exit_code = f"{type(exc).__name__}: {exc}", EXIT_UNEXPECTED
+    if meta is not None:
+        meta = {"status": "ok", "exit_code": EXIT_OK, **meta,
+                "dec": dec, "ra": ra, "pixels": pixels, "uuid": user_id,
+                "seconds": round(time.time() - t0, 1)}
+        _write_json(pending / "meta.json", meta)
 
     if final.exists():  # appeared while we were working - don't overwrite it
         print(f"error: {final} appeared during the job; result left in {pending}", file=sys.stderr)
@@ -1883,11 +1928,11 @@ def main(argv: list[str]) -> int:
     except Exception as exc:  # never let housekeeping fail a finished job
         log.warning("cache cleanup failed: %s", exc)
 
-    if meta["status"] != "ok":
-        print(f"error: {meta['error']}", file=sys.stderr)
+    if error is not None:
+        print(f"error: {error}", file=sys.stderr)
     else:
         log.info("%d frames in %.1fs -> %s", len(meta["images"]), meta["seconds"], final)
-    return meta["exit_code"]
+    return exit_code
 
 
 if __name__ == "__main__":
