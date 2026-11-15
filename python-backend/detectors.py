@@ -13,6 +13,8 @@ long wavelengths - brown dwarfs, cold planets - stand out red.
 Stacking follows DeepSkyStacker's "median kappa-sigma": per colour channel,
 values far from the median (glitches) are thrown out, the rest are averaged,
 and noisier images count less (weights 1 / noise^2).
+
+per Intelligence (SI) was used in creating this file. It was used to help write docstrings and comments, and to suggest code structure. The code was written by a human developer, and the SI's suggestions were reviewed and edited by the developer as needed. The final code is the result of the developer's work, with the SI serving as a tool to assist in the development process.
 """
 
 from __future__ import annotations
