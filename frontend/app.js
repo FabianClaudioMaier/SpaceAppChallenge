@@ -677,9 +677,15 @@ function startVideoHeartbeat(uuid) {
   );
 }
 
+// A stored video that is gone (the middleware deletes GIFs after 30 min unused)
+// is given up after this many "not found" answers in a row (x 500 ms = 10 s),
+// instead of asking the server for it forever.
+const MAX_MISSING_POLLS = 20;
+
 async function displayVideo(uuid) {
   const poll = ++activeVideoPoll;
   const framesUrl = videoUrlFor(uuid, false);
+  let missing = 0;
 
   while (poll === activeVideoPoll) {
     try {
@@ -705,7 +711,19 @@ async function displayVideo(uuid) {
         }
         return;
       }
-      if (response.status !== 404) {
+      if (response.status === 404) {
+        missing += 1;
+        if (missing >= MAX_MISSING_POLLS) {
+          console.info("The video no longer exists on the server (cleaned up), not asking again");
+          if (uuid === currentVideoUuid) {
+            currentVideoUuid = null;
+            localStorage.removeItem("videoUuid");
+          }
+          if (loadingUuid === uuid) setLoading(false);
+          return;
+        }
+      } else {
+        missing = 0;
         console.warn(`Video request failed: HTTP ${response.status}`);
       }
     } catch (error) {
@@ -760,6 +778,9 @@ async function requestVideoUuid(DEC, RA, PIXELS, MS) {
 
 coordinateForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  // A job is running: Enter in a coordinate field or "Apply" in the settings
+  // also submit this form - don't start a second job.
+  if (submitButton.disabled) return;
 
   let previewWasUpdated = false;
   try {
@@ -815,6 +836,7 @@ function setLoading(on) {
   throbber.hidden = !on;
   image.parentElement.classList.toggle("loading", on);
   submitButton.disabled = on; // greyed out while a job runs (see style.css)
+  applySettingsButton.disabled = on;
   if (on) {
     const started = Date.now();
     throbberText.textContent = "Working… 0 s";

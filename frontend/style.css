@@ -381,7 +381,8 @@ color: white;}
   animation: spin 1.3s linear infinite; /* 30% slower than 0.9 s */
 }
 
-#submit-button:disabled {
+#submit-button:disabled,
+#apply-settings:disabled {
   background-color: #5a5d62;
   color: #b9bcc1;
   cursor: not-allowed;

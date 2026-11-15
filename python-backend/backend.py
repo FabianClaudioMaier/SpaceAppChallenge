@@ -18,12 +18,13 @@ What happens:
     1. Cache/usr/.pending_<UUID>/ is created
     2. the frames are built into it (or, for a request identical to an earlier
        one, copied from Cache/results/ - see build_frames_cached):
-         frame_000.jpg, frame_001.jpg, ...   oldest first, PIXELS x PIXELS, colour
-                                             (blue = D1-D3 0.75-2.4 um, red = D4-D6 2.4-5 um)
-         diff/diff_000.jpg, ...              each frame minus the average of all frames
-                                             (grey = unchanged, white = brighter now,
-                                             black = was brighter) - a subfolder, so the
-                                             middleware's *.jpg list doesn't pick it up
+         frame_000.jpg, frame_001.jpg, ...   oldest first, one per SPHEREx visit,
+                                             PIXELS wide, PIXELS high + a timestamp strip,
+                                             colour (blue = D1-D3 0.75-2.4 um, red = D4-D6 2.4-5 um)
+         diff/diff_000.jpg, ...              each frame minus the median of the frames taken
+                                             with the same detectors (grey = unchanged,
+                                             white = only here, e.g. an asteroid) - a subfolder,
+                                             so the middleware's *.jpg list doesn't pick it up
          meta.json                           status, timestamps, frame info, catalogue links
     3. the folder is renamed to Cache/usr/<UUID>/ and the program exits
     The backend never deletes anything in Cache/usr/ - the middleware does that.
@@ -38,20 +39,22 @@ Exit codes (the description goes to stderr and into meta.json["error"]):
     5  Cache/usr/<UUID>/ or Cache/usr/.pending_<UUID>/ already exists
 
 Pipeline:
+    build_frames_cached  an identical earlier request is just copied (Cache/results/)
     find_exposures       IRSA query: every SPHEREx image that covers (ra, dec)
-    group_into_passes    group the images by SPHEREx pass over the spot
     coverage_of          which images cover the whole frame (headers only)
-    plan_frames          split passes into >= MIN_FRAMES frames, same detectors in each
-    read_cutout          read only a small square of each image (public AWS copy)
+    plan_visit_frames    one frame per SPHEREx visit
+    read_cutout          download only the part of each image the frame needs
+                         (frame_footprint; IRSA multi-range, AWS whole rows as backup)
     subtract_background  local sky model per image (removes gradients/bands) + noise
-    reproject_cutout     line every square up on one common grid
-    detectors.combine    kappa-sigma stack per detector, noise-weighted per colour
-    render_frames        same brightness scale for every frame -> colour JPGs
-    render_differences   frame minus average -> movers stand out
+    reproject_cutout     line every image up on one common grid
+    detectors.combine    kappa-sigma stack per colour channel, noise-weighted
+    render_frames        same brightness scale for every frame -> colour JPGs + timestamp
+    render_differences   frame minus reference -> movers stand out
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import json
@@ -67,7 +70,7 @@ import urllib.parse
 import uuid as uuidlib
 import warnings
 from collections import Counter, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -123,29 +126,19 @@ COLLECTION_RE = re.compile(r"^spherex_dr(\d+)$")
 PIXEL_SCALE_ARCSEC = 6.15
 MIN_PIXELS, MAX_PIXELS = 3, 2040  # 2040 = width of one SPHEREx detector
 
-# Images are grouped by SPHEREx pass over the spot (like Backyard Worlds' epochs):
-EPOCH_GAP_DAYS = 30.0   # a gap longer than this between images starts a new pass
-EPOCH_MAX_DAYS = 60.0   # a pass never spans longer (spots near the ecliptic
-                        # poles are seen almost continuously)
-# ... and passes are split into several frames until the video has at least
-# this many (as far as the data allows, see plan_frames).
-MIN_FRAMES = 6
-
-# What one frame of the video is:
-#   "visits": one SPHEREx visit (its ~6 images are taken within minutes, visits
-#             are ~11 h apart). Nothing moves noticeably during a visit, so moving
-#             things survive the glitch removal: asteroids (2-6 px/hour) jump
-#             between frames, TNOs (~14 px/day) crawl, a distant planet (~1 px/day
-#             at 500 AU) drifts. ~25 frames, each ~2x noisier than a "passes" frame.
-#   "passes": a third of a pass each (24 images over ~2 weeks): deep, clean
-#             frames, but anything moving more than ~1 px in 2 weeks is removed
-#             as a glitch or smeared (that includes a planet closer than ~1000 AU).
-FRAME_MODE = "visits"
+# One frame of the video = one SPHEREx visit: its ~6 images are taken within
+# minutes, visits are ~11 h apart (passes over a spot ~6 months apart). Nothing
+# moves noticeably during a visit, so moving things survive the glitch removal:
+# asteroids (2-6 px/hour) jump between frames, TNOs (~14 px/day) crawl, a distant
+# planet (~1 px/day at 500 AU) drifts, Barnard's star (1.7 px/year) creeps.
+# (Frames stacked over ~2 weeks were cleaner, but removed or smeared anything
+# moving more than ~1 px in that time - see git history for that mode.)
 VISIT_GAP_H = 1.0           # images closer in time than this belong to one visit
 MIN_IMAGES_PER_CHANNEL = 3  # a visit is used if it has this many blue AND red images
                             # covering the whole frame (median of 3 removes glitches)
 MAX_VISIT_FRAMES = 30       # at most this many visits (evenly spread over time)
 MAX_IMAGES_PER_VISIT = 12   # (visits near the ecliptic poles can have more)
+MIN_FRAMES = 6              # fewer complete visits: the next-best ones are added
 
 # Sky level is estimated per tile of this many pixels (~3.3') and smoothed, so
 # large-scale gradients and stray-light bands are removed but stars are kept.
@@ -171,18 +164,8 @@ WORKER_PROCESSES = min(16, getattr(os, "process_cpu_count", os.cpu_count)() or 4
 # until roughly this much would be waiting (at least 2 x DOWNLOAD_THREADS images).
 QUEUE_AHEAD_BYTES = 1024**3
 
-# Reading the FLAGS extension doubles download size and time per image, so it is
-# off. The few glitch pixels it would mask (~0.3% per image, at random places)
-# are removed by the median when a detector has >= 3 images in a frame (see
-# detectors.MAX_IMAGES_PER_FRAME).
-USE_FLAGS = False
-
-# FLAGS extension bits treated as bad pixels (only used if USE_FLAGS). Bits 0-2 are confirmed
-# (TRANSIENT, OVERFLOW, SUR_ERROR). The full list is in Table 10 of the SPHEREx
-# Explanatory Supplement - add hot/cold/persistence/outlier bits once verified.
-# Bit 21 marks pixels on a *source*; never mask that one.
-BAD_FLAG_BITS = (0, 1, 2)
-BAD_FLAG_MASK = sum(1 << b for b in BAD_FLAG_BITS)
+# The FLAGS extension (bad-pixel mask) is not read: it would double the download.
+# Glitches (cosmic rays) are removed by the median of each visit's images instead.
 
 EXIT_OK = 0
 EXIT_BAD_ARGS = 1
@@ -209,7 +192,7 @@ def _coord_key(ra: float, dec: float) -> str:
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
 
@@ -218,12 +201,25 @@ def _write_json(path: Path, obj) -> None:
     _atomic_write_bytes(path, json.dumps(obj, indent=1).encode())
 
 
+def _touch(path: Path) -> None:
+    """Mark a cache file as just used (its mtime), so trim_cache deletes it last."""
+    try:
+        os.utime(path)
+    except OSError:
+        pass
+
+
 def _read_json(path: Path, max_age_s: float | None = None):
-    if not path.exists():
+    """Cached JSON, or None if missing, too old or damaged (then it is simply rebuilt)."""
+    try:
+        if max_age_s is not None and time.time() - path.stat().st_mtime > max_age_s:
+            return None
+        return json.loads(path.read_text())
+    except FileNotFoundError:
         return None
-    if max_age_s is not None and time.time() - path.stat().st_mtime > max_age_s:
+    except (OSError, ValueError) as exc:
+        log.warning("ignoring damaged cache file %s (%s)", path, exc)
         return None
-    return json.loads(path.read_text())
 
 
 # --------------------------------------------------------------------------- #
@@ -288,7 +284,7 @@ def parse_args(argv: list[str]) -> tuple[float, float, int, str]:
     except ValueError:
         raise BackendError(EXIT_BAD_ARGS, f"UUID is not a valid UUID: {uuid_s!r}")
 
-    return dec, ra % 360.0, pixels, user_id
+    return dec + 0.0, ra % 360.0 + 0.0, pixels, user_id  # (+ 0.0 turns -0.0 into 0.0: one cache key)
 
 
 # --------------------------------------------------------------------------- #
@@ -353,25 +349,8 @@ def find_exposures(ra: float, dec: float, collection: str) -> list[Exposure]:
 
 
 # --------------------------------------------------------------------------- #
-# 2. SPHEREx passes -> video frames
+# 2. Which images go into which frame
 # --------------------------------------------------------------------------- #
-def group_into_passes(exposures: list[Exposure]) -> list[list[Exposure]]:
-    """Group the images by SPHEREx pass over the spot.
-
-    SPHEREx sees a given spot for a few days to weeks every ~6 months. A new
-    pass starts after a gap of more than EPOCH_GAP_DAYS, or once the pass
-    would span more than EPOCH_MAX_DAYS -> typically 2-3 passes per year.
-    """
-    passes: list[list[Exposure]] = []
-    for e in sorted(exposures, key=lambda e: e.mjd):
-        if (passes and e.mjd - passes[-1][-1].mjd <= EPOCH_GAP_DAYS
-                and e.mjd - passes[-1][0].mjd <= EPOCH_MAX_DAYS):
-            passes[-1].append(e)
-        else:
-            passes.append([e])
-    return passes
-
-
 # An image "fully covers" the frame when at least this fraction of the test
 # points spread over the frame lies on its detector (see frame_coverage).
 FULL_COVERAGE = 0.999
@@ -411,6 +390,7 @@ def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int, c
     """
     path = CACHE_DIR / "coverage" / collection / f"{_coord_key(ra, dec)}_p{pixels}.json"
     known: dict[tuple[str, int], float] = {(o, d): c for o, d, c in (_read_json(path) or [])}
+    _touch(path)
     todo = [e for e in exposures if (e.obs_id, e.detector) not in known]
     if todo:
         def fetch_header(e: Exposure) -> bool:
@@ -438,75 +418,6 @@ def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int, c
     return {(e.obs_id, e.detector): known.get((e.obs_id, e.detector)) for e in exposures}
 
 
-def plan_frames(passes: list[list[Exposure]], min_frames: int = MIN_FRAMES,
-                coverage: dict[tuple[str, int], float | None] | None = None) -> list[list[Exposure]]:
-    """Turn the passes into at least min_frames frames (as far as the data allows).
-
-    A pass is split into k frames *per detector, in time order*: each
-    detector's images are cut into k consecutive parts, and frame j gets part
-    j of every detector. So every frame of a pass has the same wavelength mix
-    (no colour jumps), the frames stay in time order, and each detector keeps
-    >= MIN_IMAGES_PER_DETECTOR images per frame (glitch removal keeps working).
-    Splits go to the pass with the most images per frame first. A detector
-    with too few images for k parts is left out of that pass, as long as both
-    colour channels stay represented. Bonus: frames days apart within one pass
-    show fast movers such as asteroids moving.
-
-    With `coverage` (see coverage_of), each detector uses only its images that
-    cover the whole frame, if there are enough of them for its k parts;
-    otherwise all its images (partly-covering images leave edges where a
-    detector has only 1-2 images - detectors.weighted_mean copes with that).
-    -> list of frames (each a list of images, at most MAX_IMAGES_PER_FRAME via
-       detectors.pick), in time order; passes without enough images are dropped.
-    """
-    m = detectors.MIN_IMAGES_PER_DETECTOR
-
-    def covers_frame(e: Exposure) -> bool:
-        return coverage is not None and (coverage.get((e.obs_id, e.detector)) or 0.0) >= FULL_COVERAGE
-
-    def channels(by_det: dict) -> set[str]:
-        return {c for c, dets in detectors.CHANNELS.items() if any(d in by_det for d in dets)}
-
-    def images_for(imgs: list[Exposure], k: int) -> list[Exposure] | None:
-        """A detector's images for k frames: the fully-covering ones if they suffice, else all."""
-        full = [e for e in imgs if covers_frame(e)]
-        if len(full) >= m * k:
-            return full
-        return imgs if len(imgs) >= m * k else None
-
-    def usable(by_det: dict, k: int) -> dict | None:
-        """Detectors that can give >= m images to each of k frames, if both colours survive."""
-        keep = {d: sel for d, imgs in by_det.items() if (sel := images_for(imgs, k))}
-        return keep if keep and channels(keep) == channels(by_det) else None
-
-    per_pass = []
-    for p in passes:
-        by_det: dict[int, list[Exposure]] = {}
-        for e in sorted(p, key=lambda e: e.mjd):
-            by_det.setdefault(e.detector, []).append(e)
-        per_pass.append({d: imgs for d, imgs in by_det.items() if len(imgs) >= m})
-
-    splits = [1 if by_det else 0 for by_det in per_pass]
-    while sum(splits) < min_frames:
-        candidates = [i for i, by_det in enumerate(per_pass)
-                      if splits[i] and usable(by_det, splits[i] + 1)]
-        if not candidates:
-            break  # the data doesn't allow more frames
-        richest = max(candidates, key=lambda i: sum(map(len, per_pass[i].values())) / splits[i])
-        splits[richest] += 1
-
-    frames = []
-    for by_det, k in zip(per_pass, splits):
-        if not k:
-            continue
-        keep = usable(by_det, k)
-        for j in range(k):
-            part = [e for imgs in keep.values()
-                    for e in imgs[j * len(imgs) // k:(j + 1) * len(imgs) // k]]
-            frames.append(detectors.pick(part))
-    return [f for f in frames if f]
-
-
 def group_into_visits(exposures: list[Exposure]) -> list[list[Exposure]]:
     """Group the images by SPHEREx visit: images less than VISIT_GAP_H apart."""
     visits: list[list[Exposure]] = []
@@ -521,7 +432,7 @@ def group_into_visits(exposures: list[Exposure]) -> list[list[Exposure]]:
 def plan_visit_frames(exposures: list[Exposure], coverage: dict[tuple[str, int], float | None],
                       min_frames: int = MIN_FRAMES, max_frames: int = MAX_VISIT_FRAMES
                       ) -> tuple[list[list[Exposure]], int]:
-    """FRAME_MODE "visits": one frame per visit -> (frames, number of visits not used).
+    """One frame per SPHEREx visit -> (frames, number of visits not used).
 
     Used are the visits with >= MIN_IMAGES_PER_CHANNEL blue AND red images that
     cover the whole frame (enough for the median to remove glitches in both
@@ -543,7 +454,7 @@ def plan_visit_frames(exposures: list[Exposure], coverage: dict[tuple[str, int],
         chosen = sorted(chosen + rest[:min_frames - len(chosen)], key=lambda v: v[0].mjd)
     if len(chosen) > max_frames:
         chosen = [chosen[round(i * (len(chosen) - 1) / (max_frames - 1))] for i in range(max_frames)]
-    frames = [detectors.pick(v, MAX_IMAGES_PER_VISIT, min_per_detector=1) for v in chosen]
+    frames = [detectors.pick(v, MAX_IMAGES_PER_VISIT) for v in chosen]
     return frames, len(visits) - len(frames)
 
 
@@ -557,7 +468,6 @@ class Cutout:
     x0: int                 # position of data[0, 0] in the full 2040x2040 image
     y0: int
     header: str             # IMAGE header (for the WCS)
-    flags_near_target: int  # OR of FLAGS bits within 2 px of the target
 
     @property
     def wcs(self) -> WCS:
@@ -568,7 +478,7 @@ class DownloadError(Exception):
     pass
 
 
-# ---- exact byte-range downloads (used when USE_FLAGS is off) ---------------
+# ---- exact byte-range downloads -------------------------------------------
 # A FITS file is a sequence of text headers (80-character "cards" in blocks of
 # 2880 bytes) and binary data. The IMAGE data is stored row after row as
 # big-endian float32, so the rows of our square are one contiguous byte range:
@@ -652,15 +562,26 @@ HTTP_SLOW_FRACTION = 0.25        # ... and slower than 1/4 of the typical speed 
 HTTP_MIN_BYTES_PER_S = 32_000    # never call anything faster than this "slow"
 HTTP_ATTEMPTS = 3                # the last attempt is never aborted for being slow
 
-_http = threading.local()  # one requests.Session (connection pool) per download thread
+# Idle requests.Sessions (each keeps its connections open), shared by all threads.
+# Not one per thread: most requests run in short-lived background threads (see
+# _in_background), and a new session each time meant a new connection + TLS
+# handshake for every image and header.
+_idle_sessions: list[requests.Session] = []
+_sessions_lock = threading.Lock()
 _speeds_lock = threading.Lock()
 _recent_speeds: deque[float] = deque(maxlen=50)  # bytes/s of recently finished big requests
 
 
-def _session() -> requests.Session:
-    if not hasattr(_http, "session"):
-        _http.session = requests.Session()
-    return _http.session
+@contextlib.contextmanager
+def _session() -> Iterator[requests.Session]:
+    """A session for one request, taken from the shared pool and put back afterwards."""
+    with _sessions_lock:
+        session = _idle_sessions.pop() if _idle_sessions else requests.Session()
+    try:
+        yield session
+    finally:
+        with _sessions_lock:
+            _idle_sessions.append(session)
 
 
 def _too_slow_below() -> float:
@@ -738,7 +659,7 @@ def _http_range(url: str, start: int, end: int) -> bytes:
 
 
 def _http_get(url: str, range_spec: str, want: int | None = None,
-              judge_speed: bool = True) -> tuple[bytes, dict[str, str]]:
+              judge_speed: bool = True) -> tuple[bytes, Mapping[str, str]]:
     """GET with a Range header -> (body, response headers), retrying stuck/failed attempts.
 
     Only a 206 answer is accepted. Anything else (e.g. 200 = the whole 65 MB file,
@@ -751,11 +672,12 @@ def _http_get(url: str, range_spec: str, want: int | None = None,
     for attempt in range(1, HTTP_ATTEMPTS + 1):
         t0 = time.monotonic()
         try:
-            with _session().get(url, headers={"Range": range_spec}, stream=True,
-                                timeout=(HTTP_CONNECT_TIMEOUT_S, HTTP_STALL_TIMEOUT_S)) as r:
+            with _session() as session, session.get(
+                    url, headers={"Range": range_spec}, stream=True,
+                    timeout=(HTTP_CONNECT_TIMEOUT_S, HTTP_STALL_TIMEOUT_S)) as r:
                 if r.status_code != 206:  # 206 = "here is the part you asked for"
                     raise DownloadError(f"HTTP {r.status_code} (expected 206)")
-                headers = dict(r.headers)
+                headers = r.headers  # case-insensitive ("content-type" == "Content-Type")
                 buf = bytearray()
                 for chunk in r.iter_content(64 * 1024):
                     buf += chunk
@@ -803,8 +725,9 @@ def _http_multirange(url: str, ranges: list[tuple[int, int]]) -> list[bytes]:
     return out
 
 
-def _split_byteranges(body: bytes, headers: dict[str, str]) -> list[tuple[int, bytes]]:
+def _split_byteranges(body: bytes, headers: Mapping[str, str]) -> list[tuple[int, bytes]]:
     """Body of a 206 answer -> [(first byte position, bytes), ...] of its parts."""
+    headers = requests.structures.CaseInsensitiveDict(headers)
     ctype = headers.get("Content-Type", "")
     if not ctype.lower().startswith("multipart/byteranges"):
         # one part only (a single range, or the server merged them all)
@@ -812,6 +735,8 @@ def _split_byteranges(body: bytes, headers: dict[str, str]) -> list[tuple[int, b
         if not m:
             raise DownloadError(f"206 answer without Content-Range ({ctype!r})")
         return [(int(m[1]), body)]
+    if "boundary=" not in ctype:
+        raise DownloadError(f"multipart answer without boundary ({ctype!r})")
     boundary = ctype.split("boundary=", 1)[1].split(";")[0].strip().strip('"')
     delimiter = b"--" + boundary.encode()
     parts, pos = [], 0
@@ -889,6 +814,7 @@ def image_header(exp: Exposure, collection: str, fetch: bool = True) -> tuple[fi
     path = _header_path(exp, collection)
     cached = _read_json(path)
     if cached is not None:
+        _touch(path)
         return fits.Header.fromstring(cached["header"]), cached["data_offset"]
     if not fetch:
         return None
@@ -1039,47 +965,6 @@ def _cut_to_footprint(cut: Cutout, fp: Footprint) -> np.ndarray:
     return out
 
 
-def _read_square_fits(url: str, ra: float, dec: float, half: int):
-    """With FLAGS: generic FITS reader over HTTP (fsspec), needed for the compressed FLAGS.
-
-    -> (IMAGE header, data or None if off the detector, flags or None, (xc, yc, x0, y0, nx, ny))
-    """
-    with fits.open(url, use_fsspec=True,
-                   fsspec_kwargs={"block_size": 1024**2, "cache_type": "bytes"}) as h:
-        hdr = h["IMAGE"].header
-        xc, yc, x0, x1, y0, y1, nx, ny = _square_bounds(hdr, ra, dec, half)
-        if x1 - x0 < 3 or y1 - y0 < 3:
-            return hdr, None, None, (xc, yc, x0, y0, nx, ny)
-        data = np.array(h["IMAGE"].section[y0:y1, x0:x1], dtype=np.float32)
-        flags = np.array(h["FLAGS"].section[y0:y1, x0:x1]).astype(np.int64) & 0xFFFFFFFF
-    return hdr, data, flags, (xc, yc, x0, y0, nx, ny)
-
-
-def _square_bounds(hdr: fits.Header, ra: float, dec: float, half: int):
-    """Where the target is in this image and which part of the image the square covers."""
-    x, y = (float(v) for v in WCS(hdr).world_to_pixel_values(ra, dec))
-    nx, ny = hdr["NAXIS1"], hdr["NAXIS2"]
-    xc, yc = round(x), round(y)
-    x0, x1 = max(xc - half, 0), min(xc + half + 1, nx)
-    y0, y1 = max(yc - half, 0), min(yc + half + 1, ny)
-    return xc, yc, x0, x1, y0, y1, nx, ny
-
-
-def _square_with_flags(url: str, exp: Exposure, ra: float, dec: float, pixels: int) -> Cutout | None:
-    """USE_FLAGS only: a square that fits the frame at any tilt, bad pixels (FLAGS) set to NaN."""
-    half = math.ceil(pixels / 2 * math.sqrt(2)) + 2
-    hdr, data, flags, (xc, yc, x0, y0, nx, ny) = _read_square_fits(url, ra, dec, half)
-    if data is None:
-        return None  # the square doesn't overlap this detector
-    data[(flags & BAD_FLAG_MASK) != 0] = np.nan
-    flags_near = 0
-    if 0 <= xc < nx and 0 <= yc < ny:
-        lx, ly = xc - x0, yc - y0
-        win = flags[max(ly - 2, 0):ly + 3, max(lx - 2, 0):lx + 3]
-        flags_near = int(np.bitwise_or.reduce(win.ravel()))
-    return Cutout(exp, data, x0, y0, hdr.tostring(), flags_near)
-
-
 def _subtract_sky_level(data: np.ndarray) -> np.ndarray:
     """Remove the zodiacal light / sky level of this image (one number)."""
     sample = data[::4, ::4] if data.size > 250_000 else data  # a sample is plenty
@@ -1094,22 +979,6 @@ def _download_cutout(exp: Exposure, ra: float, dec: float, pixels: int,
                      collection: str) -> Cutout | None:
     """Download the part of one image the frame needs; None if the frame is off this detector."""
     ring = frame_ring(ra, dec, pixels)
-    if USE_FLAGS:
-        errors = []
-        for url in (exp.s3_url, exp.url):  # AWS first, IRSA as fallback
-            try:
-                square = _square_with_flags(url, exp, ra, dec, pixels)
-                break
-            except Exception as exc:
-                errors.append(f"{type(exc).__name__}: {exc}")
-        else:
-            raise DownloadError(f"{exp.obs_id} D{exp.detector}: {' | '.join(errors)}")
-        fp = square and frame_footprint(fits.Header.fromstring(square.header), ring)
-        if fp is None:
-            return None
-        data = _subtract_sky_level(_cut_to_footprint(square, fp))
-        return Cutout(exp, data, fp.x0, fp.y0, square.header, square.flags_near_target)
-
     hdr, data_offset = image_header(exp, collection)  # usually cached already (coverage_of)
     fp = frame_footprint(hdr, ring)
     if fp is None:
@@ -1126,7 +995,7 @@ def _download_cutout(exp: Exposure, ra: float, dec: float, pixels: int,
             _stats.count("whole_rows_used")
     except DownloadError as exc:
         raise DownloadError(f"{exp.obs_id} D{exp.detector}: {exc}") from None  # not cached
-    return Cutout(exp, _subtract_sky_level(data), fp.x0, fp.y0, hdr.tostring(), 0)
+    return Cutout(exp, _subtract_sky_level(data), fp.x0, fp.y0, hdr.tostring())
 
 
 def _read_whole_rows(exp: Exposure, hdr: fits.Header, data_offset: int, fp: Footprint) -> np.ndarray:
@@ -1193,15 +1062,14 @@ def _load_cutout_file(path: Path, exp: Exposure) -> Cutout | None:
     meta = json.loads(str(z["meta"]))
     if meta.get("off_chip"):
         return None
-    return Cutout(exp, z["data"], meta["x0"], meta["y0"], meta["header"], meta["flags_near_target"])
+    return Cutout(exp, z["data"], meta["x0"], meta["y0"], meta["header"])
 
 
 def _save_cutout_file(path: Path, cut: Cutout | None) -> None:
     if cut is None:
         meta, data = {"off_chip": True}, np.zeros((0, 0), np.float32)
     else:
-        meta = {"x0": cut.x0, "y0": cut.y0, "header": cut.header,
-                "flags_near_target": cut.flags_near_target}
+        meta = {"x0": cut.x0, "y0": cut.y0, "header": cut.header}
         data = cut.data
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp.npz")
@@ -1244,12 +1112,18 @@ def read_cutout(exp: Exposure, ra: float, dec: float, pixels: int, collection: s
     coord = _coord_key(ra, dec)
     path = folder / f"D{exp.detector}_{coord}_p{pixels}.npz"
     if path.exists():
-        _stats.count("cutout_cached")
-        return _load_cutout_file(path, exp)
+        try:
+            cut = _load_cutout_file(path, exp)
+            _touch(path)
+            _stats.count("cutout_cached")
+            return cut
+        except Exception as exc:  # damaged file: rebuilt below (and overwritten)
+            log.warning("cached cutout %s not readable (%s), fetching it again", path.name, exc)
 
     for bigger in _bigger_cutouts(folder, exp.detector, coord, pixels):
         try:
             big = _load_cutout_file(bigger, exp)
+            _touch(bigger)
         except Exception as exc:  # damaged file: try the next one / download
             log.warning("cached cutout %s not readable: %s", bigger.name, exc)
             continue
@@ -1259,8 +1133,7 @@ def read_cutout(exp: Exposure, ra: float, dec: float, pixels: int, collection: s
             fp = frame_footprint(fits.Header.fromstring(big.header), frame_ring(ra, dec, pixels))
             # (sky level measured again on just this footprint: same as downloading it)
             cut = None if fp is None else Cutout(
-                exp, _subtract_sky_level(_cut_to_footprint(big, fp)), fp.x0, fp.y0,
-                big.header, big.flags_near_target)
+                exp, _subtract_sky_level(_cut_to_footprint(big, fp)), fp.x0, fp.y0, big.header)
         _stats.count("cutout_cut_from_bigger")
         break
     else:
@@ -1456,10 +1329,8 @@ def _add_label_strip(img: Image.Image, label: str) -> Image.Image:
 
 
 def frame_label(meta: dict) -> str:
-    """Timestamp shown on a frame: when its images were taken (UTC)."""
-    if FRAME_MODE == "visits":  # a visit takes minutes: one moment
-        return meta["timestamp"][:16].replace("T", " ") + " UTC"
-    return f"{meta['date_start']} to {meta['date_end']}"  # a frame spans ~2 weeks
+    """Timestamp shown on a frame: when its images were taken (a visit takes minutes), UTC."""
+    return meta["timestamp"][:16].replace("T", " ") + " UTC"
 
 
 def render_frames(frames: list[dict], out_dir: Path, labels: list[str] | None = None) -> list[str]:
@@ -1678,7 +1549,7 @@ def _load_one(exp: Exposure) -> tuple:
     """Runs in a worker process: load the image's part (from the cache), remove its
     sky background and line it up.
 
-    -> ("ok", exposure, lined-up image, flags, noise) | ("off_chip",) | ("failed", reason)
+    -> ("ok", exposure, lined-up image, noise) | ("off_chip",) | ("failed", reason)
     Only the lined-up PIXELS x PIXELS image is sent back, so memory stays small.
     """
     j = _JOB
@@ -1689,27 +1560,24 @@ def _load_one(exp: Exposure) -> tuple:
     if cut is None:
         return ("off_chip",)
     data, noise = subtract_background(cut.data)
-    return ("ok", exp, reproject_cutout(cut, j["align"], data), cut.flags_near_target, noise)
+    return ("ok", exp, reproject_cutout(cut, j["align"], data), noise)
 
 
 # --------------------------------------------------------------------------- #
 # The job: build all frames into out_dir
 # --------------------------------------------------------------------------- #
-def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
-                 wanted_detectors=None) -> dict:
+def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> dict:
     """Write frame_*.jpg into out_dir and return the metadata (without status).
 
     Logs a summary of where the time went at the end (see JobStats).
     """
     t_start = time.monotonic()
-    use_detectors = detectors.parse_detectors(wanted_detectors)  # None -> all six
     collection = latest_collection()
-    exposures = detectors.select(find_exposures(ra, dec, collection), use_detectors)
+    exposures = find_exposures(ra, dec, collection)
     _stats.phases["search"] = time.monotonic() - t_start
     if not exposures:
         raise BackendError(EXIT_NO_DATA, f"no {collection} images cover RA={ra:.5f} Dec={dec:+.5f}")
 
-    passes = group_into_passes(exposures)
     job = (ra, dec, pixels, collection)
     frames, frame_meta, n_failed = [], [], 0
     # The worker processes start right away: they first help with coverage_of,
@@ -1722,23 +1590,13 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
         _stats.phases["coverage"] = t_images - t_coverage
         n_full = sum(1 for c in coverage.values() if c is not None and c >= FULL_COVERAGE)
         log.info("%d of %d images cover the whole frame", n_full, len(exposures))
-        if FRAME_MODE == "visits":
-            time_bins, bins_skipped = plan_visit_frames(exposures, coverage)
-        else:
-            time_bins = plan_frames(passes, coverage=coverage)
-            # passes skipped: too few images per detector to remove glitches
-            bins_skipped = sum(1 for p in passes if not detectors.pick(p))
-            if not time_bins:  # nothing has enough images: better a glitchy video than none
-                time_bins = [b for b in (detectors.pick(p, min_per_detector=1) for p in passes) if b]
-                bins_skipped = 0
+        time_bins, bins_skipped = plan_visit_frames(exposures, coverage)
 
         # How many images may be queued ahead (their lined-up results wait in RAM).
         max_queued = max(2 * DOWNLOAD_THREADS, QUEUE_AHEAD_BYTES // (pixels * pixels * 4))
-        log.info("%d images available, using %d in %d frames (one per %s; %d %s not used), "
+        log.info("%d images available, using %d in %d frames (one per visit; %d visits not used), "
                  "%dx%d px frames, %d download threads, %d processes",
-                 len(exposures), sum(map(len, time_bins)), len(time_bins),
-                 "visit" if FRAME_MODE == "visits" else "part of a pass", bins_skipped,
-                 "visits" if FRAME_MODE == "visits" else "passes",
+                 len(exposures), sum(map(len, time_bins)), len(time_bins), bins_skipped,
                  pixels, pixels, DOWNLOAD_THREADS, WORKER_PROCESSES)
         queued: deque[list[Future]] = deque()  # one list of futures per queued time bin
         next_bin = 0
@@ -1760,13 +1618,10 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
                 continue
             by_detector: dict[int, list[np.ndarray]] = {}
             noise_by_detector: dict[int, list[float]] = {}
-            flags = 0
-            for exp, img, f, noise in loaded:
+            for exp, img, noise in loaded:
                 by_detector.setdefault(exp.detector, []).append(img)
                 noise_by_detector.setdefault(exp.detector, []).append(noise)
-                flags |= f
-            frame = detectors.combine(by_detector, noise_by_detector,
-                                      "channel" if FRAME_MODE == "visits" else "detector")
+            frame = detectors.combine(by_detector, noise_by_detector)
             if not np.isfinite(frame["all"]).any():
                 continue
             mjds = [exp.mjd for exp, *_ in loaded]
@@ -1779,8 +1634,6 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
                 "n_images": len(loaded),
                 "detectors": sorted(by_detector),
                 "channels": [c for c in ("blue", "red") if frame[c] is not None],
-                "flag_bits_near_target": ([b for b in range(32) if flags >> b & 1]
-                                          if USE_FLAGS else None),  # None = FLAGS not read
             })
 
     _stats.phases["images"] = time.monotonic() - t_images
@@ -1803,7 +1656,6 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
     return {
         "collection": collection,
         "pixel_scale_arcsec": PIXEL_SCALE_ARCSEC,
-        "detectors": list(use_detectors),
         "colour": ({"red": "D4-D6 (2.4-5.0 um)", "green": "average of red and blue",
                     "blue": "D1-D3 (0.75-2.4 um)"} if COLOR_FRAMES else None),
         "images": names,
@@ -1811,7 +1663,7 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path,
         "difference_images": diff_names,
         "frames": frame_meta,
         "images_failed": n_failed,
-        "time_bins_skipped": bins_skipped,
+        "visits_not_used": bins_skipped,
         "links": catalogue_links(ra, dec, pixels),
     }
 
@@ -1860,6 +1712,7 @@ def load_result(collection: str, ra: float, dec: float, pixels: int, fingerprint
         stored = _read_json(src / RESULT_META)
         if not stored or stored.get("fingerprint") != fingerprint:
             return None
+        _touch(src / RESULT_META)
         meta = stored["meta"]
         files = _result_files(meta)
         shutil.rmtree(staging, ignore_errors=True)
@@ -1918,6 +1771,70 @@ def build_frames_cached(ra: float, dec: float, pixels: int, out_dir: Path, user_
 
 
 # --------------------------------------------------------------------------- #
+# Keeping the cache small
+# --------------------------------------------------------------------------- #
+# Without this the cache only grows (one full-size spot alone is ~3 GB of
+# cutouts). After a job, at most once per CACHE_TRIM_EVERY_S: if Cache/ (without
+# usr/) is over CACHE_MAX_BYTES, the entries used longest ago are deleted until it
+# is under CACHE_TRIM_TO of that. "Used" = file mtime, refreshed when a cutout,
+# header, coverage or stored result is read (_touch); an image list (queries/)
+# counts from when it was fetched. A stored result (results/<..>/) goes as a whole.
+# Leftovers of killed jobs (".<name>.<pid>.tmp" files, staging folders) older
+# than STALE_TEMP_S are deleted too. Deleting is safe while other jobs run: a
+# file that vanishes is simply fetched or built again.
+CACHE_MAX_BYTES = 10 * 1024**3
+CACHE_TRIM_TO = 0.8
+CACHE_TRIM_EVERY_S = 3600
+STALE_TEMP_S = 24 * 3600
+
+
+def trim_cache() -> None:
+    marker = CACHE_DIR / ".last_trim"
+    now = time.time()
+    try:
+        if now - marker.stat().st_mtime < CACHE_TRIM_EVERY_S:
+            return
+    except FileNotFoundError:
+        pass
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+    entries: list[tuple[float, int, Path]] = []  # (last used, bytes, file or result folder)
+    for top in CACHE_DIR.iterdir():
+        if top.name == "usr" or not top.is_dir():
+            continue
+        for path in list(top.rglob("*")):  # listed first: deleting while walking is fragile
+            try:
+                st = path.lstat()
+                if path.name.startswith("."):  # temp files / staging folders of other jobs
+                    if now - st.st_mtime > STALE_TEMP_S:
+                        shutil.rmtree(path) if path.is_dir() else path.unlink()
+                    continue
+                if top.name == "results" and (path / RESULT_META).exists():
+                    files = [f for f in path.rglob("*") if f.is_file()]
+                    entries.append(((path / RESULT_META).stat().st_mtime,
+                                    sum(f.stat().st_size for f in files), path))
+                elif path.is_file() and not (top.name == "results" and path.parent != top):
+                    entries.append((st.st_mtime, st.st_size, path))
+            except OSError:  # removed meanwhile by another job
+                continue
+    total = sum(size for _, size, _ in entries)
+    if total <= CACHE_MAX_BYTES:
+        return
+    freed, goal = 0, total - CACHE_TRIM_TO * CACHE_MAX_BYTES
+    for _, size, path in sorted(entries):
+        if freed >= goal:
+            break
+        try:
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
+            freed += size
+        except OSError:
+            continue
+    log.info("cache was %.1f GB, deleted %.1f GB of entries used longest ago",
+             total / 1024**3, freed / 1024**3)
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 def main(argv: list[str]) -> int:
@@ -1961,6 +1878,10 @@ def main(argv: list[str]) -> int:
         print(f"error: {final} appeared during the job; result left in {pending}", file=sys.stderr)
         return EXIT_FOLDER_EXISTS
     os.rename(pending, final)
+    try:
+        trim_cache()  # after handing over the result; at most once an hour
+    except Exception as exc:  # never let housekeeping fail a finished job
+        log.warning("cache cleanup failed: %s", exc)
 
     if meta["status"] != "ok":
         print(f"error: {meta['error']}", file=sys.stderr)

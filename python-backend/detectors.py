@@ -1,39 +1,23 @@
 """
-Which SPHEREx detectors go into a frame, and how they are squashed into one image.
+How the images of one frame (one SPHEREx visit) are squashed into one picture.
 
 SPHEREx has 6 detector arrays. Each one sees a different slice of infrared
 light (and inside a detector the wavelength changes slowly across the chip,
 which is where the 102 "bands" come from: 17 per detector).
 
-By default all six are used. Like Backyard Worlds (WISE W1 = blue, W2 = red),
-the short-wavelength detectors D1-D3 become the blue channel and the long ones
+All six are used. Like Backyard Worlds (WISE W1 = blue, W2 = red), the
+short-wavelength detectors D1-D3 become the blue channel and the long ones
 D4-D6 the red channel of a colour picture, so objects that are much brighter at
-long wavelengths - brown dwarfs, cold planets - stand out red. To use only some
-detectors, pass e.g. parse_detectors("56").
+long wavelengths - brown dwarfs, cold planets - stand out red.
 
-Stacking follows DeepSkyStacker's "median kappa-sigma": per detector (or per
-colour channel, see combine), values far from the median (glitches) are thrown
-out, the rest are averaged, and noisier images and detectors count less
-(weights 1 / noise^2).
+Stacking follows DeepSkyStacker's "median kappa-sigma": per colour channel,
+values far from the median (glitches) are thrown out, the rest are averaged,
+and noisier images count less (weights 1 / noise^2).
 """
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
-
-ALL_DETECTORS: tuple[int, ...] = (1, 2, 3, 4, 5, 6)
-
-# Wavelength range of each detector in micrometres (from the IRSA metadata).
-WAVELENGTH_UM: dict[int, tuple[float, float]] = {
-    1: (0.75, 1.12),
-    2: (1.10, 1.65),
-    3: (1.63, 2.44),
-    4: (2.40, 3.85),
-    5: (3.81, 4.43),
-    6: (4.41, 5.01),
-}
 
 # Colour channels of the rendered frames (green = average of the two).
 CHANNELS: dict[str, tuple[int, ...]] = {
@@ -42,44 +26,9 @@ CHANNELS: dict[str, tuple[int, ...]] = {
 }
 
 
-def parse_detectors(wanted=None) -> tuple[int, ...]:
-    """None/"" -> all six. Also accepts [5, 6], (5, 6), "56" or "5,6"."""
-    if wanted is None or wanted == "":
-        return ALL_DETECTORS
-    if isinstance(wanted, str):
-        wanted = [int(ch) for ch in wanted if ch.isdigit()]
-    detectors = tuple(sorted({int(d) for d in wanted}))
-    invalid = [d for d in detectors if d not in ALL_DETECTORS]
-    if not detectors or invalid:
-        raise ValueError(f"detectors must be from {ALL_DETECTORS}, got {wanted!r}")
-    return detectors
+def pick(exposures: list, max_images: int) -> list:
+    """Choose at most max_images of one frame's images, fairly spread over detectors and time.
 
-
-def select(exposures: list, detectors: tuple[int, ...] = ALL_DETECTORS) -> list:
-    """Keep only the exposures taken with one of the wanted detectors."""
-    return [e for e in exposures if e.detector in detectors]
-
-
-# At most this many images go into one frame. Fewer = faster (less to download
-# and align) but noisier. Measured over 38 positions: a frame typically has
-# 36-43 images available, ~6 per detector. 24 = 4 per detector when all 6 are
-# there: 1/3 less to download than all 6, ~1.2x the noise, and still one image
-# to spare above MIN_IMAGES_PER_DETECTOR (glitch removal).
-MAX_IMAGES_PER_FRAME = 24
-
-
-# A detector needs at least this many images in a frame: the median of 3 throws
-# out glitch pixels (cosmic-ray hits etc.) that appear in only one image. With
-# 1-2 images a glitch survives as a white dot that is only in that one frame.
-MIN_IMAGES_PER_DETECTOR = 3
-
-
-def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME,
-         min_per_detector: int = MIN_IMAGES_PER_DETECTOR) -> list:
-    """Choose at most max_images of one time bin, fairly spread over detectors and time.
-
-    0. only detectors with >= min_per_detector images in this bin are used;
-       if no detector has that many, the bin gets no images (-> no frame)
     1. hand out the slots round-robin: one per detector, then a second each, ...
        (a detector with fewer images than its share just gets all of them)
     2. inside each detector take images evenly spaced in time
@@ -88,7 +37,6 @@ def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME,
     by_det: dict[int, list] = {}
     for e in sorted(exposures, key=lambda e: e.mjd):
         by_det.setdefault(e.detector, []).append(e)
-    by_det = {d: items for d, items in by_det.items() if len(items) >= min_per_detector}
     if sum(map(len, by_det.values())) <= max_images:
         return sorted((e for items in by_det.values() for e in items), key=lambda e: (e.mjd, e.detector))
 
@@ -109,59 +57,46 @@ def pick(exposures: list, max_images: int = MAX_IMAGES_PER_FRAME,
 
 # Kappa-sigma rejection: a value is thrown out if it is further than
 #   KAPPA x (that image's noise) + RELATIVE_TOLERANCE x |median|
-# from the median of its detector. The relative part keeps bright stars, whose
+# from the median of its colour channel. The relative part keeps bright stars, whose
 # brightness differs a bit between images because each image sees them at a
 # slightly different wavelength.
 KAPPA = 4.0
 RELATIVE_TOLERANCE = 0.25
 
-# A detector's stack is only trusted at a pixel where at least this many of its
+# A channel's stack is only trusted at a pixel where at least this many of its
 # images had data there: with a single value a glitch can't be recognised. (At
 # the edges of images that only partly cover the frame this happens a lot.)
-# If no detector of a channel reaches it at a pixel, all are used there anyway.
+# If neither channel reaches it at a pixel, both are used there anyway.
 MIN_VALID_PER_PIXEL = 2
 
 
 def combine(images_by_detector: dict[int, list[np.ndarray]],
-            noise_by_detector: dict[int, list[float]],
-            reject_across: str = "detector") -> dict[str, np.ndarray | None]:
-    """Squash all images of one frame.
+            noise_by_detector: dict[int, list[float]]) -> dict[str, np.ndarray | None]:
+    """Squash all images of one frame (one SPHEREx visit).
 
-    1. median kappa-sigma stack (stack_detector), glitches removed
-         reject_across="detector": per detector (frames spanning days: each
-                                   detector has several images)
-         reject_across="channel":  over all images of a colour channel together
-                                   (one SPHEREx visit: ~1 image per detector,
-                                   but ~3 per channel, taken minutes apart)
-    2. per colour channel and over all stacks: noise-weighted mean, per
-       pixel only of stacks with enough images there (weighted_mean)
+    1. per colour channel: median kappa-sigma stack of all its images
+       (stack_detector) - a visit has ~1 image per detector but ~3 per
+       channel, taken minutes apart, so glitches can be recognised
+    2. "all": noise-weighted mean of the two channel stacks, per pixel only of
+       stacks with enough images there (weighted_mean)
     -> {"blue": ..., "red": ..., "all": ...}; a channel is None when none of
        its detectors is in this frame. NaN pixels (not covered) are ignored.
     """
-    if reject_across == "channel":
-        stacks = {}
-        for name, dets in CHANNELS.items():
-            present = [d for d in dets if d in images_by_detector]
-            if present:
-                stacks[name] = stack_detector(
-                    [img for d in present for img in images_by_detector[d]],
-                    [n for d in present for n in noise_by_detector[d]])
-        result = {name: weighted_mean([stacks[name]]) if name in stacks else None
-                  for name in CHANNELS}
-        result["all"] = weighted_mean(list(stacks.values()))
-        return result
-
-    stacks = {d: stack_detector(images_by_detector[d], noise_by_detector[d])
-              for d in images_by_detector}
+    stacks = {}
+    for name, dets in CHANNELS.items():
+        present = [d for d in dets if d in images_by_detector]
+        if present:
+            stacks[name] = stack_detector(
+                [img for d in present for img in images_by_detector[d]],
+                [n for d in present for n in noise_by_detector[d]])
     result: dict[str, np.ndarray | None] = {
-        name: weighted_mean([stacks[d] for d in dets if d in stacks])
-        for name, dets in CHANNELS.items()}
+        name: weighted_mean([stacks[name]]) if name in stacks else None for name in CHANNELS}
     result["all"] = weighted_mean(list(stacks.values()))
     return result
 
 
 def stack_detector(images: list[np.ndarray], noises: list[float]) -> tuple[np.ndarray, float, np.ndarray]:
-    """Median kappa-sigma stack of one detector's images -> (image, its noise, valid count).
+    """Median kappa-sigma stack of some images (a channel's) -> (image, its noise, valid count).
 
     Glitches (cosmic rays etc.) appear in one image only, far from the median,
     and are thrown out; the remaining values are averaged with weights

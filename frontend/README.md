@@ -2,8 +2,9 @@
 
 Voraussetzung: Python 3.
 
+Im Hauptordner des Repos:
+
 ```bash
-cd frontend
 ./start.sh
 ```
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MIDDLEWARE_DIR="$FRONTEND_DIR/../middleware"
-BACKEND_DIR="$FRONTEND_DIR/../python-backend"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIDDLEWARE_DIR="$ROOT_DIR/middleware"
+BACKEND_DIR="$ROOT_DIR/python-backend"
 "$BACKEND_DIR/setup_venv.sh"
 PY="$BACKEND_DIR/.venv/bin/python"
 PORT="${PORT:-5173}"

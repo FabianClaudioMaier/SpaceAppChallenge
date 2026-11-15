@@ -4,6 +4,4 @@ numpy
 scipy
 pillow
 requests
-fsspec
-aiohttp
 matplotlib

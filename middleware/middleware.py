@@ -9,6 +9,13 @@ from pathlib import Path
 from uuid import uuid4
 import shutil
 
+# Absolute paths (from this file's location), so it works no matter which
+# folder start.sh / server.py was started from. (Relative "../python-backend"
+# only worked when started from frontend/ or middleware/; from anywhere else
+# the backend wasn't found and the user got "Backend failed with exit code 2".)
+BACKEND_DIR = Path(__file__).resolve().parent.parent / "python-backend"
+USR_DIR = BACKEND_DIR / "Cache" / "usr"
+
 
 class BackendError(Exception):
     '''
@@ -44,14 +51,14 @@ def main(DEC, RA, PIXELS, interval):
         DiffVideo = convertToVideo(DiffImages, interval) if DiffImages else None
     finally:
         # Remove the uuid folder after collecting the images - also when that failed
-        shutil.rmtree(f"../python-backend/Cache/usr/{uuid}", ignore_errors=True)
+        shutil.rmtree(USR_DIR / uuid, ignore_errors=True)
     if DiffVideo is not None:
         sendToFrontend(DiffVideo, uuid, suffix="_diff")
     video_id = sendToFrontend(Video, uuid)  # last: the frontend waits for this one
     return video_id
 
 
-def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
+def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH=str(BACKEND_DIR / "backend.py")):
     '''
     Creates a uuid.
     Starts the backend process with the given DEC and RA coordinates, PIXELS, and uuid.
@@ -77,7 +84,7 @@ def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH="../python-backend/backend.py"):
     if result.returncode != 0:
         message = _backendErrorMessage(uuid, result.stderr, result.returncode)
         # On an error the backend still hands over Cache/usr/<uuid> (with meta.json) - remove it
-        shutil.rmtree(f"../python-backend/Cache/usr/{uuid}", ignore_errors=True)
+        shutil.rmtree(USR_DIR / uuid, ignore_errors=True)
         raise BackendError(message, result.returncode)
     return uuid
 
@@ -89,7 +96,7 @@ def _backendErrorMessage(uuid, stderr, returncode):
     on stderr (e.g. for invalid arguments, where no folder is created).
     '''
     try:
-        with open(f"../python-backend/Cache/usr/{uuid}/meta.json") as f:
+        with open(USR_DIR / uuid / "meta.json") as f:
             error = json.load(f).get("error")
         if error:
             return error
@@ -112,7 +119,7 @@ def getImages(uuid):
 
     Output: list of images in jpg format
     '''
-    PATH= f"../python-backend/Cache/usr/{uuid}"
+    PATH = str(USR_DIR / uuid)
 
     while not os.path.exists(PATH) or not os.listdir(PATH):
         time.sleep(1)
@@ -134,7 +141,7 @@ def getDiffImages(uuid):
 
     Output: list of difference images in jpg format, sorted (empty if there are none)
     '''
-    PATH = f"../python-backend/Cache/usr/{uuid}/diff"
+    PATH = str(USR_DIR / uuid / "diff")
     if not os.path.isdir(PATH):
         return []
     return [f"{PATH}/{filename}" for filename in sorted(os.listdir(PATH))
