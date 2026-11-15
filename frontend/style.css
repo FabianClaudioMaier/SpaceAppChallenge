@@ -25,8 +25,11 @@ p {
   font-family: "DM Sans", sans-serif;
   background-color: #133365;
   color: white;
-  position: relative;
-  left: -37px;
+}
+
+/* Submit sits right below the text under the globe (centred like that text) */
+.submit-row {
+  margin-top: 20px;
 }
 #fname,
 #lname {
@@ -414,10 +417,6 @@ p {
     grid-template-columns: 1fr;
     gap: 12px;
   }
-  #submit-button {
-    left: -12.5%;
-  }
-
 }
 
 @media (max-width: 900px) {
@@ -447,13 +446,18 @@ p {
   transform: scale(0.95);           /* Button wird kurz etwas kleiner */
 }
 
-/* Frage auf gleicher Höhe wie der Text unter dem Globus:
-   beide Spalten teilen sich dieselben 2 Zeilen (oben Bild/Globus, unten Text) */
-.result-column,
-.celestial-globe-panel {
+/* Links: GIF oben, Frage darunter. Rechts: Globus, direkt darunter sein Text und
+   Submit. (Früher teilten sich beide Spalten dieselben 2 Zeilen, damit die Frage
+   auf Höhe des Globus-Texts steht - aber die obere Zeile wächst mit dem GIF und
+   der Stern-Infokarte und schob den Text weit unter den Globus.) */
+.result-column {
   grid-row: span 2;
   display: grid;
   grid-template-rows: subgrid;
+}
+
+.celestial-globe-panel {
+  grid-row: span 2;
 }
 
 .result-column {
