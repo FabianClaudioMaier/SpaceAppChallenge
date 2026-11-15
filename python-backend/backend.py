@@ -25,7 +25,8 @@ What happens:
                                              with the same detectors (grey = unchanged,
                                              white = only here, e.g. an asteroid) - a subfolder,
                                              so the middleware's *.jpg list doesn't pick it up
-         meta.json                           status, timestamps, frame info, catalogue links
+         meta.json                           status, timestamps, frame info, catalogue links,
+                                             star overlays (Gaia DR3, CatWISE2020 - overlays.py)
     3. the folder is renamed to Cache/usr/<UUID>/ and the program exits
     The backend never deletes anything in Cache/usr/ - the middleware does that.
     On an error the folder is renamed as well, but without meta.json.
@@ -95,6 +96,7 @@ from scipy.ndimage import (binary_dilation, binary_fill_holes, find_objects, gau
                            label, map_coordinates, median_filter)
 
 import detectors
+import overlays
 
 warnings.simplefilter("ignore", FITSFixedWarning)
 log = logging.getLogger("spherex_backend")
@@ -112,6 +114,8 @@ BACKEND_DIR = Path(__file__).resolve().parent
 #     cutouts/<collection>/<obs_id>/D<n>_<coord>_p<pixels>.npz
 #                                                 the part of one image a frame needs
 #                                                 (_h<half>.npz: older squares, still reused)
+#     catalogs/<catalog>/<coord>_p<pixels>.json  candidate stars for the overlays (overlays.py,
+#                                                 never expires: the catalogues don't change)
 #     coverage/<coord>_p<pixels>.json
 #                                                 how much of the frame each image covers
 #     results/<collections>/<coord>_p<pixels>/    finished frames of an earlier identical
@@ -1620,12 +1624,15 @@ def _load_one(exp: Exposure) -> tuple:
 # --------------------------------------------------------------------------- #
 # The job: build all frames into out_dir
 # --------------------------------------------------------------------------- #
-def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dict, int]:
-    """Write frame_*.jpg into out_dir -> (metadata without status, number of failed images).
+def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dict, int, bool]:
+    """Write frame_*.jpg into out_dir -> (metadata without status, number of failed
+    images, whether the star overlays are complete).
 
     Logs a summary of where the time went at the end (see JobStats).
     """
     t_start = time.monotonic()
+    # The star catalogues (overlays.py) are asked meanwhile - other servers than IRSA.
+    catalogs = _in_background(lambda: overlays.fetch(ra, dec, pixels, CACHE_DIR))
     exposures, searched = find_all_exposures(ra, dec)
     collection = "+".join(searched)
     _stats.phases["search"] = time.monotonic() - t_start
@@ -1707,6 +1714,18 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dic
         meta["image"] = name
         meta["difference_image"] = diff_names[i] if diff_names else None
 
+    t_overlays = time.monotonic()
+    try:
+        found, overlays_complete = catalogs.result()
+    except Exception as exc:  # a bug in overlays.py must not cost the frames
+        log.warning("star overlays failed: %s", exc)
+        found, overlays_complete = {}, False
+    star_overlays = overlays.place(found, make_grid_wcs(ra, dec, pixels), pixels,
+                                   [m["mjd_mean"] for m in frame_meta])
+    log.info("star overlays: %s (waited %.1f s)", ", ".join(
+        f"{n} {len(o['stars']) if o else 'failed'}" for n, o in star_overlays.items()),
+        time.monotonic() - t_overlays)
+
     return {
         "collections": searched,
         "images_per_collection": {n: sum(e.collection == n for e in exposures) for n in searched},
@@ -1719,7 +1738,8 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dic
         "frames": frame_meta,
         "visits_not_used": bins_skipped,
         "links": catalogue_links(ra, dec, pixels),
-    }, n_failed
+        "overlays": star_overlays,
+    }, n_failed, overlays_complete
 
 
 # --------------------------------------------------------------------------- #
@@ -1740,7 +1760,7 @@ def _result_dir(collection: str, ra: float, dec: float, pixels: int) -> Path:
 
 def _result_fingerprint(exposures: list[Exposure]) -> str:
     h = hashlib.sha256()
-    for source in (Path(__file__), Path(detectors.__file__)):
+    for source in (Path(__file__), Path(detectors.__file__), Path(overlays.__file__)):
         h.update(source.read_bytes())
     for e in sorted(exposures, key=lambda e: (e.obs_id, e.detector)):
         h.update(f"{e.collection}/{e.obs_id}/{e.detector};".encode())
@@ -1817,11 +1837,13 @@ def build_frames_cached(ra: float, dec: float, pixels: int, out_dir: Path, user_
         log.info("identical request done before: result copied from %s",
                  _result_dir(collection, ra, dec, pixels))
         return meta
-    meta, n_failed = build_frames(ra, dec, pixels, out_dir)
-    if n_failed == 0:
-        save_result(meta, out_dir, collection, ra, dec, pixels, fingerprint)
-    else:
+    meta, n_failed, overlays_complete = build_frames(ra, dec, pixels, out_dir)
+    if n_failed:
         log.info("result not kept for reuse: %d images failed", n_failed)
+    elif not overlays_complete:  # else the overlay would stay missing for this spot
+        log.info("result not kept for reuse: star overlays incomplete")
+    else:
+        save_result(meta, out_dir, collection, ra, dec, pixels, fingerprint)
     return meta
 
 
