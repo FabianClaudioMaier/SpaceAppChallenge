@@ -90,7 +90,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not 50 <= PIXELS <= 500 or not 25 <= MS <= 1000:
                 raise ValueError("Pixel Size or Speed is outside its allowed range")
 
-            uuid, json = main(DEC, RA, PIXELS, MS)
+            uuid, metadata = main(DEC, RA, PIXELS, MS)
         except BackendError as error:
             # The backend's own explanation, e.g. "DEC must be in [-90, 90] degrees, got 91"
             status = {
