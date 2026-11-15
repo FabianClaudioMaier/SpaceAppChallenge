@@ -43,7 +43,7 @@ def main(DEC, RA, PIXELS, interval):
 
     uuid = sendToBackend(DEC, RA, PIXELS)  # raises BackendError if the backend failed
     try:
-        Images, json = getImages(uuid)
+        Images, metadata = getImages(uuid)
         Video = convertToVideo(Images, interval)
         # Difference images (frame minus reference, see backend.py): a second GIF,
         # shown when "Show difference images" is on. None if the backend made none.
@@ -55,7 +55,7 @@ def main(DEC, RA, PIXELS, interval):
     if DiffVideo is not None:
         sendToFrontend(DiffVideo, uuid, suffix="_diff")
     video_id = sendToFrontend(Video, uuid)  # last: the frontend waits for this one
-    return video_id, json
+    return video_id, metadata
 
 
 def sendToBackend(DEC, RA, PIXELS, BACKEND_PATH=str(BACKEND_DIR / "backend.py")):
@@ -124,13 +124,14 @@ def getImages(uuid):
     while not os.path.exists(PATH) or not os.listdir(PATH):
         time.sleep(1)
 
-    Images = []
-    for filename in sorted(os.listdir(PATH)):
-        if filename.endswith(".jpg"):
-            Images.append(f"{PATH}/{filename}")
-        if filename == "meta.json":
-            json = json.load(open(f"{PATH}/{filename}")) 
-    return Images, json
+    Images = [
+        f"{PATH}/{filename}"
+        for filename in sorted(os.listdir(PATH))
+        if filename.endswith(".jpg")
+    ]
+    with (USR_DIR / uuid / "meta.json").open(encoding="utf-8") as metadata_file:
+        metadata = json.load(metadata_file)
+    return Images, metadata
 
 
 def getDiffImages(uuid):
