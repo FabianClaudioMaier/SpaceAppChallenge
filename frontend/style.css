@@ -434,3 +434,40 @@ color: white;}
   background-color: #133365;
   color: white;
 }
+
+/* Frage auf gleicher Höhe wie der Text unter dem Globus:
+   beide Spalten teilen sich dieselben 2 Zeilen (oben Bild/Globus, unten Text) */
+.result-column,
+.celestial-globe-panel {
+  grid-row: span 2;
+  display: grid;
+  grid-template-rows: subgrid;
+}
+
+.result-column {
+  align-items: start;
+}
+
+/* die 560-px-Grenze auf die beiden Teile statt aufs ganze Panel,
+   sonst rechnet der Browser die obere Zeile zu hoch */
+.celestial-globe-panel {
+  width: 100%;
+}
+
+.globe-top,
+.globe-bottom {
+  width: min(100%, 560px);
+  margin-inline: auto;
+}
+
+.movement-question p {
+  margin: 4px 0 12px;
+}
+
+.movement-question {
+  margin-bottom: 24px; /* Abstand zum Globus, wenn alles untereinander steht */
+}
+
+.visualization-row {
+  row-gap: 0;
+}

@@ -101,14 +101,15 @@
         </div>
       </div>
         <section class="celestial-globe-panel" aria-labelledby="globe-heading">
-          <h1 id="globe-heading">Celestial pointing</h1>
+          <div class="globe-top"><h1 id="globe-heading">Celestial pointing</h1>
           <canvas
             id="coordinate-globe"
             width="560"
             height="360"
             role="img"
             aria-label="Time-dependent Earth projection on a celestial sphere, with coordinate lines and the selected sky direction"
-          ></canvas>
+          ></canvas>          </div>
+          <div class="globe-bottom">
           <p class="globe-legend">Blue: celestial equator · Red: selected sky direction</p>
           <p class="globe-disclaimer">
             Approximate Earth projection: the marker shows where you’d stand to see the selected RA/Dec directly overhead at the current time.
@@ -122,7 +123,7 @@
             >Three.js planet textures</a>
           </p>
           <p id="globe-status" aria-live="polite">Enter coordinates to point the globe.</p>
-          <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>
+          <button id="apply-globe-coordinates" type="button" hidden>Apply coordinates</button>          </div>
         </section>
       </div>
 
