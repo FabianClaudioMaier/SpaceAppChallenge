@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 import shutil
+import csv
 
 # Absolute paths (from this file's location), so it works no matter which
 # folder start.sh / server.py was started from. (Relative "../python-backend"
@@ -223,17 +224,27 @@ def sendToFrontend(Video, uuid, suffix=""):
 
 def save(metadata):
     '''
-    Writes the parameters to the results.csv file for storage.
+    Writes the parameters to the saves.csv file for storage.
 
     Parameters:
     metadata: dictionary containing the parameters to be saved
     '''
 
+    detectors_by_frame = [frame["detectors"] for frame in metadata["frames"]]
+    row = [
+        metadata["dec"],
+        metadata["ra"],
+        json.dumps(detectors_by_frame),
+    ]
+
     RESULTS_CSV_PATH = Path(__file__).resolve().parent / "saves.csv"
 
-    if not RESULTS_CSV_PATH.exists():
-        with open(RESULTS_CSV_PATH, "w") as f:
-            f.write("DEC,RA,PIXELS,interval,timestamp\n")
-    with open(RESULTS_CSV_PATH, "a") as f:
-        f.write(f"{metadata['DEC']},{metadata['RA']},{metadata['PIXELS']},{metadata['interval']},{datetime.now().isoformat()}\n")
-    pass
+    file_exists = RESULTS_CSV_PATH.exists()
+
+    with open(RESULTS_CSV_PATH, "a", newline="") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow(["DEC", "RA", "detectors"])
+
+        writer.writerow(row)
