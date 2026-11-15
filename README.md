@@ -53,8 +53,8 @@ The server only listens on `127.0.0.1` (your own computer).
    again is instant (cache).
 4. **Player:** stop, play and step frame by frame. Click or drag on the image
    to zoom.
-5. **Stars:** "Gaia stars" and "WISE sources" in Settings. They follow the
-   frame on screen; fast movers get their track and name. Click a star for
+5. **Stars:** "Gaia stars", "WISE sources" and "Fast movers" in Settings. They
+   follow the frame on screen; fast movers get their track and name. Click a star for
    details: magnitudes, distance, SIMBAD/VizieR links, and its position, date
    and movement in the frame on screen.
 
@@ -110,6 +110,7 @@ Output goes to `Cache/usr/<UUID>/`: `frame_000.jpg …` (oldest first),
 | SPHEREx images: the files | AWS bucket `nasa-irsa-spherex`, IRSA as fallback |
 | Star overlays | Gaia DR3 (`I/355/gaiadr3`) and CatWISE2020 (`II/365/catwise`) via VizieR |
 | Star names, types | SIMBAD |
+| Known fast movers | SIMBAD (proper motion ≥ 200 mas/yr) |
 | Earth texture | three.js example textures |
 
 VizieR and SIMBAD are run by CDS (Strasbourg); the backend falls back to their

@@ -11,7 +11,10 @@ Sources (all independent of IRSA, which also serves the SPHEREx images):
     VizieR    Gaia DR3 (I/355/gaiadr3) and CatWISE2020 (II/365/catwise),
               CDS Strasbourg first, the CfA (Harvard) mirror as backup
     SIMBAD    common names ("Barnard's star", "HD 163774") and object types,
-              same two hosts
+              same two hosts; and the known fast movers (proper motion >=
+              FAST_MAS_YR) with literature motions - right also where Gaia sees
+              nothing and CatWISE's fit fails (WISE 0855-0714: CatWISE says
+              0.27"/yr, really 8.1"/yr)
 
 Which stars:
     bright    the N_BRIGHT brightest in the frame (Gaia: G, CatWISE: W1)
@@ -67,6 +70,7 @@ TIMEOUT_S = (5.0, 30.0)     # connect, read
 PIXEL_SCALE_ARCSEC = 6.15   # SPHEREx (same as backend.PIXEL_SCALE_ARCSEC)
 
 GAIA_COLUMNS = "Source,RA_ICRS,DE_ICRS,Gmag,BPmag,RPmag,Plx,e_Plx,pmRA,pmDE,PM"
+SIMBAD_BANDS = ("J", "H", "K", "G")  # magnitudes taken from SIMBAD for its fast movers
 
 MJD_J2000 = 51544.5
 DAYS_PER_YEAR = 365.25
@@ -89,6 +93,15 @@ CATALOGS = {
         "epoch_mjd": 57170.0,  # ReadMe: RAPMdeg/DEPMdeg are at MJD 57170 (2015.4)
         "mag_system": "Vega",
         "sort_mag": "W1",
+    },
+    "simbad_movers": {
+        "label": "Known fast movers (SIMBAD)",
+        "source": "SIMBAD (proper motion >= 200 mas/yr)",
+        "epoch": 2000.0,
+        "epoch_mjd": MJD_J2000,  # SIMBAD's positions are for J2000 (checked against Gaia DR3)
+        "mag_system": "Vega",
+        "sort_mag": "J",
+        "n_bright": 0,  # fast movers only, no "brightest N"
     },
 }
 
@@ -344,6 +357,44 @@ def _query_catwise(ra: float, dec: float, radius: float) -> list[dict]:
     return list(stars.values())
 
 
+def _query_simbad_movers(ra: float, dec: float, radius_arcmin: float) -> list[dict]:
+    """Every object SIMBAD knows in the circle moving >= FAST_MAS_YR (often none:
+    an empty list is a normal answer here and gets cached)."""
+    adql = ("SELECT b.main_id, b.otype, b.ra, b.dec, b.pmra, b.pmdec, b.plx_value, f.filter, f.flux "
+            "FROM basic AS b LEFT JOIN flux AS f ON f.oidref = b.oid "
+            f"WHERE CONTAINS(POINT('ICRS', b.ra, b.dec), CIRCLE('ICRS', {ra:.6f}, {dec:+.6f}, "
+            f"{radius_arcmin / 60:.5f})) = 1 "
+            f"AND b.pmra * b.pmra + b.pmdec * b.pmdec >= {FAST_MAS_YR ** 2:g}")
+    data = {"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "json", "QUERY": adql}
+
+    def ask(host: str) -> list:
+        r = requests.post(host + "/simbad/sim-tap/sync", data=data, timeout=TIMEOUT_S)
+        r.raise_for_status()
+        return r.json()["data"]
+
+    stars: dict[str, dict] = {}  # one row per object and band -> one star per object
+    for main_id, otype, s_ra, s_dec, pm_ra, pm_dec, plx, band, flux in _first_ok(
+            [lambda h=h: ask(h) for h in SIMBAD_HOSTS]):
+        if s_ra is None or s_dec is None:
+            continue
+        star = stars.get(main_id)
+        if star is None:
+            star = stars[main_id] = {
+                "id": _pretty_name(main_id),
+                "ra": s_ra, "dec": s_dec,
+                "pm_ra": pm_ra, "pm_dec": pm_dec,  # mas/yr, pmra incl. cos(dec)
+                "mag": {b: None for b in SIMBAD_BANDS},
+                "parallax_mas": _round(plx, 3),
+                "distance_ly": round(1000 / plx * 3.261564, 2) if plx and plx > 0 else None,
+                "fast_ok": True,  # literature motions
+                "vizier": None,   # not a VizieR table
+                "name": _pretty_name(main_id), "simbad_id": main_id, "simbad_type": otype or None,
+            }
+        if band in SIMBAD_BANDS and flux is not None:
+            star["mag"][band] = _round(flux, 3)
+    return list(stars.values())
+
+
 def _drop_glow_fakes(catwise: list[dict], gaia: list[dict]) -> None:
     """CatWISE 'fast movers' inside a bright Gaia star's glow are fakes: not fast_ok.
     The glow is measured by RP (red): WISE sees in the infrared, where red stars
@@ -396,7 +447,8 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
         if cached is not None:
             out[name] = cached
         else:
-            query = _query_gaia if name == "gaia_dr3" else _query_catwise
+            query = {"gaia_dr3": _query_gaia, "catwise2020": _query_catwise,
+                     "simbad_movers": _query_simbad_movers}[name]
             todo[name] = _in_background(lambda q=query: q(ra, dec, radius))
     if not todo:
         return out, True
@@ -443,7 +495,7 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
 # --------------------------------------------------------------------------- #
 # place: which stars are shown, and where on each frame (no network)
 # --------------------------------------------------------------------------- #
-def _links(star: dict) -> dict[str, str]:
+def _links(star: dict) -> dict[str, str | None]:
     if star.get("simbad_id"):
         simbad = f"{LINK_SIMBAD}/simbad/sim-id?" + urllib.parse.urlencode({"Ident": star["simbad_id"]})
     else:  # SIMBAD doesn't know it by name: search around its position
@@ -486,7 +538,7 @@ def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
             return m if m is not None else 99.0
 
         bright = {id(s) for s, _ in sorted((i for i in shown if i[0]["mag"][info["sort_mag"]] is not None),
-                                          key=mag)[:N_BRIGHT]}
+                                          key=mag)[:info.get("n_bright", N_BRIGHT)]}
         fast_ids: list[int] = []
         fast_pos: list[tuple[float, float]] = []
         for s, _ in sorted((i for i in shown if i[0]["fast_ok"] and _total_pm(i[0]) >= FAST_MAS_YR),
@@ -515,17 +567,18 @@ def place(catalogs: dict[str, list[dict] | None], grid: WCS, pixels: int,
                 "mag": s["mag"],
                 "pm_mas_yr": pm,
             }
-            if name == "gaia_dr3":
+            if "parallax_mas" in s:  # Gaia and SIMBAD
                 entry.update(parallax_mas=s["parallax_mas"], distance_ly=s["distance_ly"])
             entry.update(links=_links(s), xy=xy)
             out_stars.append(entry)
+        n_bright = info.get("n_bright", N_BRIGHT)
         result[name] = {
             "label": info["label"],
             "source": info["source"],
             "epoch": info["epoch"],
             "mag_system": info["mag_system"],
-            "selection": (f"{N_BRIGHT} brightest ({info['sort_mag']}) in the frame + up to {N_FAST} "
-                          f"with proper motion >= {FAST_MAS_YR:g} mas/yr"),
+            "selection": ((f"{n_bright} brightest ({info['sort_mag']}) in the frame + " if n_bright else "")
+                          + f"up to {N_FAST} with proper motion >= {FAST_MAS_YR:g} mas/yr"),
             "stars": out_stars,
         }
     return result

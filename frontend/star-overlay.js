@@ -1,5 +1,5 @@
-// Star overlays: the stars from the backend's meta.json ("overlays": Gaia DR3 and
-// CatWISE2020, see python-backend/overlays.py) drawn over the GIF.
+// Star overlays: the stars from the backend's meta.json ("overlays": Gaia DR3,
+// CatWISE2020 and SIMBAD's known fast movers, see python-backend/overlays.py) drawn over the GIF.
 //
 // The backend already moved every star to each frame's date (proper motion) and
 // gives its position per frame in GIF pixels from the top left ("xy", null =
@@ -18,6 +18,7 @@ const starInfo = document.querySelector("#star-info");
 const starToggles = {
   gaia_dr3: document.querySelector("#show-gaia"),
   catwise2020: document.querySelector("#show-catwise"),
+  simbad_movers: document.querySelector("#show-movers"),
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -191,6 +192,7 @@ function showStarInfo(star, catalog) {
   const links = document.createElement("p");
   links.className = "star-info-links";
   for (const [label, url] of [["SIMBAD", star.links.simbad], ["VizieR", star.links.vizier]]) {
+    if (!url) continue; // SIMBAD-only objects have no VizieR entry
     const link = document.createElement("a");
     link.href = url;
     link.target = "_blank";
@@ -253,9 +255,10 @@ function buildStarOverlay() {
           points: points.map((p) => p.join(",")).join(" "),
         }));
       }
-      const marker = catalogName === "catwise2020"
-        ? svgElement("rect", { class: "star-marker", width: 2 * radius * 0.9, height: 2 * radius * 0.9 })
-        : svgElement("circle", { class: "star-marker", r: radius });
+      const marker = catalogName === "gaia_dr3"
+        ? svgElement("circle", { class: "star-marker", r: radius })
+        : svgElement("rect", { class: "star-marker", width: 2 * radius * 0.9, height: 2 * radius * 0.9 });
+      if (catalogName === "simbad_movers") marker.classList.add("star-diamond"); // square turned 45°
       // invisible, bigger target for hover / click
       const hit = svgElement("circle", { class: "star-hit", r: radius * 1.6 });
       group.append(marker, hit);
@@ -307,6 +310,7 @@ function placeStarMarkers() {
       const size = Number(marker.getAttribute("width"));
       marker.setAttribute("x", x - size / 2);
       marker.setAttribute("y", y - size / 2);
+      if (marker.classList.contains("star-diamond")) marker.setAttribute("transform", `rotate(45 ${x} ${y})`);
     } else {
       marker.setAttribute("cx", x);
       marker.setAttribute("cy", y);

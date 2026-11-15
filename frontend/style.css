@@ -549,6 +549,7 @@ p {
 
 #star-overlay .star-layer-gaia_dr3 .star-marker { stroke: #4fe3ff; }
 #star-overlay .star-layer-catwise2020 .star-marker { stroke: #ffa53d; }
+#star-overlay .star-layer-simbad_movers .star-marker { stroke: #ff5cf0; }
 
 #star-overlay .star-fast .star-marker {
   stroke-width: 2.5px;
@@ -590,6 +591,7 @@ p {
 
 .star-legend-gaia { border-color: #4fe3ff; border-radius: 50%; }
 .star-legend-wise { border-color: #ffa53d; }
+.star-legend-movers { border-color: #ff5cf0; transform: rotate(45deg) scale(0.8); }
 
 /* Details of a clicked star, below the GIF controls */
 .star-info {
