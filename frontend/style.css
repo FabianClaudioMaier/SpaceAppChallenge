@@ -3,6 +3,12 @@
 }
 
   body {
+  /* No scrolling when everything fits: without these the form's 110 px top
+     margin leaked through body (margin collapsing), so body started 110 px down
+     and, with min-height 100vh + the default 8 px margin, the page was always
+     118 px taller than the window. flow-root keeps the margin inside body. */
+  margin: 0;
+  display: flow-root;
   min-height: 100vh;
   background-color: #050b1b;
   background-image: url("markarians_chain.jpg");
@@ -83,7 +89,7 @@ color: white;}
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 12px;
 }
 
 .settings-panel button {
@@ -93,36 +99,33 @@ color: white;}
   cursor: pointer;
 }
 
-#invert-pixel,
-#show-diff,
-.globe-mode-toggle {
+/* The on/off switches in the settings (rounded pill). ".settings-panel" in the
+   selector so it wins over the general ".settings-panel button" rule above,
+   which otherwise turned some of them into small rounded boxes. */
+.settings-panel .toggle-switch {
   position: relative;
-  flex: 0 0 56px;
-  width: 56px;
-  height: 32px;
+  flex: 0 0 46px;
+  width: 46px;
+  height: 26px;
   padding: 0;
   border: 1px solid #8fb3e6;
   border-radius: 999px;
   background: #29435f;
 }
 
-#invert-pixel .toggle-knob,
-#show-diff .toggle-knob,
-.globe-mode-toggle .toggle-knob {
+.toggle-switch .toggle-knob {
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 24px;
-  height: 24px;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: white;
   transition: transform 0.2s, background-color 0.2s;
 }
 
-#invert-pixel[aria-checked="true"] .toggle-knob,
-#show-diff[aria-checked="true"] .toggle-knob,
-.globe-mode-toggle[aria-checked="true"] .toggle-knob {
-  transform: translateX(24px);
+.toggle-switch[aria-checked="true"] .toggle-knob {
+  transform: translateX(20px); /* 46 - 2 border - 2 x 2 gap - 20 knob */
   background: #6ca9ff;
 }
 
