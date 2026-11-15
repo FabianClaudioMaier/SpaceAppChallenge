@@ -84,6 +84,66 @@ function starTitle(star, catalogLabel) {
   return `${name} (${catalogLabel}) – ${mags}${motion}`;
 }
 
+// ---- The info card's "In this frame" part, updated whenever the frame changes ----
+let selectedStar = null; // { star, catalog, uuid, cells: { date, pixel, sky, moved } }
+
+const MJD_J2000 = 51544.5;
+
+// Position at a date (MJD): the catalogue position moved with the proper motion,
+// the same straight line the backend uses for "xy" (python-backend/overlays.py _move).
+function skyPositionAt(star, catalog, mjd) {
+  const years = (mjd - (MJD_J2000 + (catalog.epoch - 2000) * 365.25)) / 365.25;
+  const pmRa = star.pm_mas_yr?.ra ?? 0; // mas/yr, includes cos(dec)
+  const pmDec = star.pm_mas_yr?.dec ?? 0;
+  const cosDec = Math.max(Math.cos((star.dec * Math.PI) / 180), 1e-6);
+  return {
+    ra: (((star.ra + (pmRa * years) / 3.6e6 / cosDec) % 360) + 360) % 360,
+    dec: star.dec + (pmDec * years) / 3.6e6,
+  };
+}
+
+// "north-west" etc. for a move in image pixels (north up, east left - see make_grid_wcs)
+function compassDirection(dx, dy) {
+  const names = ["north", "north-west", "west", "south-west", "south", "south-east", "east", "north-east"];
+  // angle from north, counter-clockwise towards west (= right in the image)
+  const angle = (Math.atan2(dx, -dy) * 180) / Math.PI;
+  return names[((Math.round(angle / 45) % 8) + 8) % 8];
+}
+
+function updateStarInfoFrame() {
+  if (!selectedStar || starInfo.hidden) return;
+  const { star, catalog, cells } = selectedStar;
+  const metadata = shownMetadata();
+  const frame = drawnFrame;
+  if (!metadata || frame === null || frame === undefined) {
+    cells.date.textContent = "– (frame not known yet; stop the GIF for exact values)";
+    for (const key of ["pixel", "sky", "moved"]) cells[key].textContent = "–";
+    return;
+  }
+  const info = metadata.frames[frame];
+  cells.date.textContent =
+    `${info.timestamp.slice(0, 16).replace("T", " ")} UTC (frame ${frame + 1} of ${metadata.frames.length})`;
+  const sky = skyPositionAt(star, catalog, info.mjd_mean);
+  cells.sky.textContent = `RA ${formatNumber(sky.ra, 5)}°, Dec ${formatNumber(sky.dec, 5)}°`;
+  const here = star.xy[frame];
+  if (!here) {
+    cells.pixel.textContent = "outside the image in this frame";
+    cells.moved.textContent = "–";
+    return;
+  }
+  cells.pixel.textContent = `x ${formatNumber(here[0], 1)}, y ${formatNumber(here[1], 1)} px (from top left)`;
+  const firstIndex = star.xy.findIndex(Boolean);
+  const first = star.xy[firstIndex];
+  const dx = here[0] - first[0];
+  const dy = here[1] - first[1];
+  const pixels = Math.hypot(dx, dy);
+  cells.moved.textContent = frame === firstIndex
+    ? "– (first frame it is in)"
+    : `${formatNumber(pixels, 2)} px = ${formatNumber(pixels * metadata.pixel_scale_arcsec, 1)}″` +
+      (pixels >= 0.01 ? ` ${compassDirection(dx, dy)}` : "") +
+      ` since ${metadata.frames[firstIndex].timestamp.slice(0, 10)}`;
+}
+
 function showStarInfo(star, catalog) {
   const rows = [
     ["Catalogue", catalog.label],
@@ -95,7 +155,7 @@ function showStarInfo(star, catalog) {
       ? `${formatNumber(star.pm_mas_yr.total, 1)} mas/yr (RA ${formatNumber(star.pm_mas_yr.ra, 1)}, Dec ${formatNumber(star.pm_mas_yr.dec, 1)})`
       : null],
     ["Distance", star.distance_ly ? `${formatNumber(star.distance_ly, 2)} light years` : null],
-    ["Position", `RA ${formatNumber(star.ra, 5)}°, Dec ${formatNumber(star.dec, 5)}° (epoch ${catalog.epoch})`],
+    ["Catalogue position", `RA ${formatNumber(star.ra, 5)}°, Dec ${formatNumber(star.dec, 5)}° (epoch ${catalog.epoch})`],
     ["Selected as", star.reason.join(" + ")],
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
 
@@ -116,6 +176,18 @@ function showStarInfo(star, catalog) {
     dd.textContent = value;
     list.append(dt, dd);
   }
+  // Live part: filled by updateStarInfoFrame for the frame on screen
+  const frameHeading = document.createElement("h3");
+  frameHeading.textContent = "In this frame";
+  const frameList = document.createElement("dl");
+  const cells = {};
+  for (const [key, term] of [["date", "Date"], ["pixel", "Position in image"],
+    ["sky", "Sky position then"], ["moved", "Moved"]]) {
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    cells[key] = document.createElement("dd");
+    frameList.append(dt, cells[key]);
+  }
   const links = document.createElement("p");
   links.className = "star-info-links";
   for (const [label, url] of [["SIMBAD", star.links.simbad], ["VizieR", star.links.vizier]]) {
@@ -126,8 +198,10 @@ function showStarInfo(star, catalog) {
     link.textContent = label;
     links.append(link);
   }
-  starInfo.append(close, heading, list, links);
+  starInfo.append(close, heading, list, frameHeading, frameList, links);
   starInfo.hidden = false;
+  selectedStar = { star, catalog, uuid: shownMetadata()?.uuid, cells };
+  updateStarInfoFrame();
 }
 
 // Rebuild the SVG: called when the GIF, the switches or the displayed size change.
@@ -142,6 +216,10 @@ function buildStarOverlay() {
   starOverlay.replaceChildren();
   starMarkers = [];
   drawnFrame = undefined;
+  if (selectedStar && selectedStar.uuid !== metadata?.uuid) { // another job: its card is stale
+    selectedStar = null;
+    starInfo.hidden = true;
+  }
   if (!metadata || !Object.values(starLayersOn).some(Boolean)) {
     starOverlay.toggleAttribute("hidden", true); // (an <svg> has no .hidden property)
     return;
@@ -241,6 +319,7 @@ function placeStarMarkers() {
       label.setAttribute("font-size", fontSize);
     }
   }
+  updateStarInfoFrame();
 }
 
 // Every animation frame: rebuild if needed (cheap check), then follow the GIF.

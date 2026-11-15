@@ -490,6 +490,7 @@ p {
   inset: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none; /* clicks go through to the <img>, which does the zoom selection */
 }
 
 /* Star overlays (star-overlay.js): over the GIF and the stopped frame. Only the
@@ -598,6 +599,15 @@ p {
   margin: 0 28px 8px 0;
   font-family: "Space Grotesk", sans-serif;
   font-size: 18px;
+}
+
+.star-info h3 {
+  margin: 12px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid #2b4a78;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 15px;
+  color: #9fc5ff;
 }
 
 .star-info dl {

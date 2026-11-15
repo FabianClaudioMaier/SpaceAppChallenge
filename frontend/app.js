@@ -964,7 +964,8 @@ function openZoom(region, imageRect) {
   zoomView.style.width = `${Math.round(region.width * scale)}px`;
   zoomView.style.height = `${Math.round(region.height * scale)}px`;
 
-  zoomImage.src = image.currentSrc || image.src;
+  // Stopped: zoom into the still frame that is showing, not the playing GIF below it
+  zoomImage.src = pausedFrame.hidden ? image.currentSrc || image.src : pausedFrame.toDataURL();
   zoomImage.style.width = `${width * scale}px`;
   zoomImage.style.height = `${height * scale}px`;
   zoomImage.style.left = `${(left - region.left) * scale}px`;
