@@ -248,31 +248,3 @@ def save(metadata):
             writer.writerow(["DEC", "RA", "detectors"])
 
         writer.writerow(row)
-
-
-def save(metadata):
-    '''
-    Writes the parameters to the saves.csv file for storage.
-
-    Parameters:
-    metadata: dictionary containing the parameters to be saved
-    '''
-
-    detectors_by_frame = [frame["detectors"] for frame in metadata["frames"]]
-    row = [
-        metadata["dec"],
-        metadata["ra"],
-        json.dumps(detectors_by_frame),
-    ]
-
-    RESULTS_CSV_PATH = Path(__file__).resolve().parent / "saves.csv"
-
-    file_exists = RESULTS_CSV_PATH.exists()
-
-    with open(RESULTS_CSV_PATH, "a", newline="") as f:
-        writer = csv.writer(f)
-
-        if not file_exists:
-            writer.writerow(["DEC", "RA", "detectors"])
-
-        writer.writerow(row)
