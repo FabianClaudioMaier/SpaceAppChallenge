@@ -28,7 +28,8 @@ Which stars:
               far better motions - CatWISE adds what Gaia can't see (brown dwarfs).
 
 fetch() talks to the servers (cached, never expires: the catalogues don't
-change), place() puts the stars on the frames (fast, no network).
+change; Gaia/CatWISE files carry the row limit in their name, so a new N_BRIGHT
+fetches again), place() puts the stars on the frames (fast, no network).
 """
 
 from __future__ import annotations
@@ -54,8 +55,8 @@ SIMBAD_HOSTS = ["https://simbad.cds.unistra.fr", "https://simbad.cfa.harvard.edu
 LINK_VIZIER = VIZIER_HOSTS[0]  # links for the user: the main site
 LINK_SIMBAD = SIMBAD_HOSTS[0]
 
-N_BRIGHT = 30               # brightest stars per catalogue in the frame
-N_FAST = 10                 # fast movers per catalogue in the frame
+N_BRIGHT = 50               # brightest stars per catalogue in the frame
+N_FAST = 30                 # fast movers per catalogue in the frame
 FAST_MAS_YR = 200.0         # "fast" from this proper motion on
 CATWISE_MIN_PM_SIGMA = 10.0  # CatWISE fast movers: motion >= this many sigma
 CATWISE_MIN_FAST_COLOR = 0.4  # W1-W2: redder than normal stars (brown dwarfs: 0.3 .. 3+)
@@ -65,6 +66,8 @@ MATCH_ARCSEC = 3.0          # CatWISE <-> Gaia: same star within this distance
 TWIN_ARCSEC = 10.0          # CatWISE lists some fast movers twice, a few " apart: show one
 MARGIN_ARCMIN = 2.0         # search beyond the frame: fast stars may move into it
 QUERY_ROWS = 2 * N_BRIGHT   # the search circle is ~2x the frame's area
+ROW_LIMITED = ("gaia_dr3", "catwise2020")  # their "brightest" query stops at QUERY_ROWS
+OLD_QUERY_ROWS = 60         # cache files without "_r<rows>" in their name were fetched with this
 HEDGE_AFTER_S = 4.0         # no answer yet -> also ask the next host
 TIMEOUT_S = (5.0, 30.0)     # connect, read
 PIXEL_SCALE_ARCSEC = 6.15   # SPHEREx (same as backend.PIXEL_SCALE_ARCSEC)
@@ -317,8 +320,38 @@ def search_radius_arcmin(pixels: int) -> float:
     return pixels * PIXEL_SCALE_ARCSEC / 60 / 2 * math.sqrt(2) + MARGIN_ARCMIN
 
 
+def _cache_name(ra: float, dec: float, pixels: int) -> str:
+    return f"ra{ra:09.5f}_dec{dec:+09.5f}_p{pixels}"
+
+
 def _cache_path(cache_dir: Path, catalog: str, ra: float, dec: float, pixels: int) -> Path:
-    return cache_dir / "catalogs" / catalog / f"ra{ra:09.5f}_dec{dec:+09.5f}_p{pixels}.json"
+    """Gaia/CatWISE: QUERY_ROWS is part of the name, so after a change of N_BRIGHT
+    the stars are fetched again instead of reusing an answer with fewer of them."""
+    rows = f"_r{QUERY_ROWS}" if catalog in ROW_LIMITED else ""
+    return cache_dir / "catalogs" / catalog / f"{_cache_name(ra, dec, pixels)}{rows}.json"
+
+
+def _older_cache(cache_dir: Path, catalog: str, ra: float, dec: float, pixels: int) -> list[dict] | None:
+    """The same frame cached with another row limit (the most rows first), or None.
+    Used when the server fails: fewer stars are better than none."""
+    if catalog not in ROW_LIMITED:
+        return None
+    folder = cache_dir / "catalogs" / catalog
+    name = _cache_name(ra, dec, pixels)
+
+    def rows(path: Path) -> int:
+        tail = path.stem[len(name):]  # "" or "_r<rows>"
+        return int(tail[2:]) if tail[2:].isdigit() else OLD_QUERY_ROWS
+
+    # "_r*" (not "*"): "..._p250*" would also match a 2500 px frame
+    found = [p for p in [folder / f"{name}.json", *folder.glob(f"{name}_r*.json")] if p.exists()]
+    for path in sorted(found, key=rows, reverse=True):
+        stars = _read_json(path)
+        if stars is not None:
+            log.warning("star overlay %s: using the older cached answer (%d rows) instead",
+                        catalog, rows(path))
+            return stars
+    return None
 
 
 def _query_gaia(ra: float, dec: float, radius: float) -> list[dict]:
@@ -436,9 +469,10 @@ def _add_names(stars_by_catalog: dict[str, list[dict]]) -> None:
 
 
 def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str, list[dict] | None], bool]:
-    """Candidate stars per catalogue -> ({catalog: stars, or None if its server failed},
-    complete). complete = nothing failed (not even the names), so a result built
-    from this may be kept for reuse. Cached per catalogue once complete."""
+    """Candidate stars per catalogue -> ({catalog: stars, or None if its server failed
+    and nothing older is cached}, complete). complete = nothing failed (not even the
+    names), so a result built from this may be kept for reuse. Cached per catalogue
+    once complete."""
     radius = search_radius_arcmin(pixels)
     out: dict[str, list[dict] | None] = {}
     todo = {}
@@ -460,11 +494,11 @@ def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str
             fresh[name] = future.result()
         except EmptyAnswer as exc:
             log.warning("star overlay %s: %s", name, exc)
-            out[name] = []
+            out[name] = _older_cache(cache_dir, name, ra, dec, pixels) or []
             complete = False
         except Exception as exc:
             log.warning("star overlay %s: catalogue query failed (%s)", name, exc)
-            out[name] = None
+            out[name] = _older_cache(cache_dir, name, ra, dec, pixels)
             complete = False
 
     gaia = out["gaia_dr3"] if "gaia_dr3" in out else fresh.get("gaia_dr3")  # cached, failed or fresh
