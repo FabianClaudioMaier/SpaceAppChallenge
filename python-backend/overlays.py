@@ -496,16 +496,17 @@ def _add_names(stars_by_catalog: dict[str, list[dict]]) -> None:
                     break
 
 
-def fetch(ra: float, dec: float, pixels: int, cache_dir: Path) -> tuple[dict[str, list[dict] | None], bool]:
+def fetch(ra: float, dec: float, pixels: int, cache_dir: Path,
+          refresh: bool = False) -> tuple[dict[str, list[dict] | None], bool]:
     """Candidate stars per catalogue -> ({catalog: stars, or None if its server failed
     and nothing older is cached}, complete). complete = nothing failed (not even the
-    names), so a result built from this may be kept for reuse. Cached per catalogue
-    once complete."""
+    names). Cached per catalogue once complete; refresh = ask the servers again
+    even if cached (the layer list's "Reload")."""
     radius = search_radius_arcmin(pixels)
     out: dict[str, list[dict] | None] = {}
     todo = {}
     for name in CATALOGS:
-        cached = _read_json(_cache_path(cache_dir, name, ra, dec, pixels))
+        cached = None if refresh else _read_json(_cache_path(cache_dir, name, ra, dec, pixels))
         if cached is not None:
             out[name] = cached
         else:
@@ -562,8 +563,16 @@ def _inside(stars: list[dict], epoch_mjd: float, grid: WCS, pixels: int,
     """Per star: is it inside the frame on at least one frame (at that frame's date)?"""
     if not stars:
         return []
-    pos = [_move(s, epoch_mjd, mjd) for s in stars for mjd in frame_mjds]
-    x, y = grid.world_to_pixel_values(np.array([p[0] for p in pos]), np.array([p[1] for p in pos]))
+    # _move for every star (rows) at every frame date (columns) at once - star by
+    # star in Python this was most of a catalogue request's time (~110,000 calls)
+    ra = np.array([s["ra"] for s in stars], dtype=float)[:, None]
+    dec = np.array([s["dec"] for s in stars], dtype=float)[:, None]
+    pm_ra = np.array([s["pm_ra"] or 0.0 for s in stars], dtype=float)[:, None]
+    pm_dec = np.array([s["pm_dec"] or 0.0 for s in stars], dtype=float)[:, None]
+    dt = ((np.asarray(frame_mjds, dtype=float) - epoch_mjd) / DAYS_PER_YEAR)[None, :]
+    cos_dec = np.maximum(np.cos(np.radians(dec)), 1e-6)
+    x, y = grid.world_to_pixel_values(((ra + pm_ra * dt / 3.6e6 / cos_dec) % 360).ravel(),
+                                      (dec + pm_dec * dt / 3.6e6).ravel())
     # FITS pixel i covers i-0.5..i+0.5
     ok = (x >= -0.5) & (x <= pixels - 0.5) & (y >= -0.5) & (y <= pixels - 0.5)
     return list(ok.reshape(len(stars), len(frame_mjds)).any(axis=1))

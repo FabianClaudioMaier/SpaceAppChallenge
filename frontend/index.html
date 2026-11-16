@@ -51,21 +51,26 @@
         <!-- Layers: which catalogues are drawn over the frame (layers.js) -->
         <section class="layers" aria-labelledby="layers-heading">
           <div class="layers-head">
+            <button id="layers-fold" class="layers-fold" type="button" aria-expanded="true" aria-controls="layers-body"
+              aria-label="Fold the layer list"><span class="chevron" aria-hidden="true"></span></button>
             <h2 id="layers-heading">Layers</h2>
+            <span id="layers-summary" class="layers-summary" hidden></span>
             <select id="layer-preset" aria-label="Preset">
               <option value="custom" hidden>Custom</option>
-              <option value="discovery">Discovery (everything)</option>
+              <option value="discovery">Everything</option>
               <option value="stars">Stars only</option>
               <option value="movers">Moving things</option>
               <option value="none">Nothing</option>
             </select>
           </div>
+          <div id="layers-body" class="layers-body">
           <ul id="layer-list" class="layer-list"></ul>
           <button id="layer-add-button" class="layer-add-button" type="button" aria-expanded="false"
-            aria-controls="layer-add-panel">+ Add catalogue…</button>
+            aria-controls="layer-add-panel">Select catalogue</button>
           <div id="layer-add-panel" class="layer-add-panel" hidden>
             <input id="layer-search" type="search" placeholder="Search: galaxies, radio, 2MASS…" aria-label="Search catalogues">
             <ul id="layer-add-list" class="layer-add-list"></ul>
+          </div>
           </div>
         </section>
       </aside>
@@ -86,23 +91,12 @@
                 draggable="false"
               />
               <canvas id="paused-frame" hidden></canvas>
-              <svg id="star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg>
+              <canvas id="star-overlay" class="star-overlay" role="img" aria-label="Known stars" hidden></canvas>
               <svg id="box-overlay" class="box-overlay" aria-label="Marked box" hidden></svg>
               <div id="throbber" class="throbber" hidden>
                 <span class="spinner" aria-hidden="true"></span>
                 <span id="throbber-text" role="status">Working…</span>
               </div>
-            </div>
-            <div class="viewer-toolbar" role="toolbar" aria-label="Image tools" aria-orientation="vertical">
-              <button class="tool-button" type="button" data-tool="pointer" aria-pressed="true" aria-label="Pointer" data-tooltip="Pointer: click a star for details (V)">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5l12.5 9.2-5.6.9 3.2 6.1-2.6 1.4-3.2-6.2L6 18.6z" /></svg>
-              </button>
-              <button class="tool-button" type="button" data-tool="zoom" aria-pressed="false" aria-label="Zoom" data-tooltip="Zoom: click or drag (Z)">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" /><path d="M15 15l5.5 5.5M10.5 7.5v6M7.5 10.5h6" /></svg>
-              </button>
-              <button class="tool-button" type="button" data-tool="box" aria-pressed="false" aria-label="Mark a box" data-tooltip="Mark something: drag a box (B)">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="1" stroke-dasharray="3 2.4" /></svg>
-              </button>
             </div>
           </div>
         </div>
@@ -110,11 +104,13 @@
         <div class="gif-controls">
           <button id="prev-frame" type="button" aria-label="Previous frame" data-tooltip="Back to last image">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
-          </button><button id="play-pause-gif" type="button" aria-label="Stop" data-tooltip="Pause">
+          </button><button id="play-pause-gif" type="button" aria-label="Stop" data-tooltip="Pause (Space)">
             <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>
             <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
           </button><button id="next-frame" type="button" aria-label="Next frame" data-tooltip="Skip to next image">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
+          </button><button id="download-gif" type="button" aria-label="Download GIF" data-tooltip="Download GIF (rulers, dates, layers)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4h2v8.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z" /></svg>
           </button>
         </div>
         <div class="movement-question">
@@ -132,50 +128,71 @@
   <button id="settings-button" type="button" aria-controls="settings-panel" aria-expanded="false">⚙ Settings</button>
 
   <div id="settings-panel" class="settings-panel" hidden>
-   <div class="setting-row">
-  <button id="invert-pixel" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Invert GIF">
-    <span class="toggle-knob" aria-hidden="true"></span>
-  </button>
-  <span>Invert GIF</span>
-</div>
-   <div class="setting-row">
-     <button id="show-diff" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Show diffs">
-       <span class="toggle-knob" aria-hidden="true"></span>
-     </button>
-     <span>Show diffs</span>
-   </div>
-   <div class="setting-row globe-mode-setting">
-     <button id="click-select-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
-       <span class="toggle-knob" aria-hidden="true"></span>
-     </button>
-     <span>Click globe to select coordinates</span>
-   </div>
-   <div class="setting-row globe-mode-setting">
-     <button id="pin-arrow-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Pin arrow while rotating">
-       <span class="toggle-knob" aria-hidden="true"></span>
-     </button>
-     <span>Pin arrow while rotating</span>
-   </div>
+    <div class="setting-row">
+      <button id="invert-pixel" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Invert GIF">
+        <span class="toggle-knob" aria-hidden="true"></span>
+      </button>
+      <span>Invert GIF</span>
+    </div>
+    <div class="setting-row">
+      <button id="show-diff" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Show diffs">
+        <span class="toggle-knob" aria-hidden="true"></span>
+      </button>
+      <span>Show diffs</span>
+    </div>
+    <div class="setting-row globe-mode-setting">
+      <button id="pin-arrow-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Pin arrow while rotating">
+        <span class="toggle-knob" aria-hidden="true"></span>
+      </button>
+      <span>Pin arrow while rotating</span>
+    </div>
+
+    <label class="setting-row grid-setting" for="grid-mode">Coordinate grid
+      <select id="grid-mode">
+        <option value="poles">Near the poles</option>
+        <option value="always">Always</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <div class="setting-row">
+      <button id="grid-labels" class="toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Grid labels away from the pole">
+        <span class="toggle-knob" aria-hidden="true"></span>
+      </button>
+      <span>Grid labels away from the pole</span>
+    </div>
+    <div class="setting-row">
+      <button id="show-globe" class="toggle-switch" type="button" role="switch" aria-checked="true" aria-label="Show globe">
+        <span class="toggle-knob" aria-hidden="true"></span>
+      </button>
+      <span>Show globe</span>
+    </div>
+    <div class="setting-row globe-mode-setting">
+      <button id="click-select-toggle" class="globe-mode-toggle toggle-switch" type="button" role="switch" aria-checked="false" aria-label="Click globe to select coordinates">
+        <span class="toggle-knob" aria-hidden="true"></span>
+      </button>
+      <span>Click globe to select coordinates</span>
+    </div>
 
     <label for="speed">Speed <output id="speed-value" for="speed">250 ms</output></label>
     <input id="speed" type="range" min="25" max="1000" step="1" value="250">
+    <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">250 px</output></label>
+    <input id="pixel-size" type="range" min="50" max="1000" step="1" value="250">
 
     <label for="contrast">Contrast <output id="contrast-value" for="contrast">100 %</output></label>
     <input id="contrast" class="view-slider" type="range" min="50" max="400" step="10" value="100">
     <label for="brightness">Brightness <output id="brightness-value" for="brightness">100 %</output></label>
     <input id="brightness" class="view-slider" type="range" min="50" max="400" step="10" value="100">
 
-        <label for="pixel-size">Cutout size <output id="pixel-size-value" for="pixel-size">250 px</output></label>
-<input id="pixel-size" type="range" min="50" max="1000" step="1" value="250">
-<button id="apply-settings" type="submit" form="coordinate-form">Apply</button>
-<a class="download-saves" href="/api/saves.csv" download="saves.csv">Download saves (CSV)</a>
+    <button id="apply-settings" type="submit" form="coordinate-form">Apply</button>
+    <a class="download-saves" href="/api/saves.csv" download="saves.csv">Download saves (CSV)</a>
+    <button id="reset-settings" class="reset-settings" type="button">Reset to defaults</button>
   </div>
 </div>
         <!-- details of a clicked star (star-overlay.js) -->
         <div id="star-info" class="star-info" aria-live="polite" hidden></div>
 
-        <!-- The globe: hidden for now (a setting to show it may come later) -->
-        <section class="celestial-globe-panel" aria-labelledby="globe-heading" hidden>
+        <!-- The globe (Settings: "Show globe", app.js) -->
+        <section class="celestial-globe-panel" aria-labelledby="globe-heading">
           <h1 id="globe-heading">Celestial pointing</h1>
           <canvas
             id="coordinate-globe"
@@ -208,6 +225,10 @@
           </div>
         </section>
       </aside>
+      <div class="panel-resizer" data-panel="side" role="separator" aria-orientation="vertical"
+        aria-label="Width of the left panel (double-click: default)" tabindex="0"></div>
+      <div class="panel-resizer" data-panel="right" role="separator" aria-orientation="vertical"
+        aria-label="Width of the right panel (double-click: default)" tabindex="0"></div>
     </form>
 
 <div id="zoom-selection" hidden></div>
@@ -217,7 +238,7 @@
   <svg class="ruler ruler-corner" aria-hidden="true"></svg>
   <svg id="zoom-ruler-top" class="ruler ruler-top" aria-hidden="true"></svg>
   <svg id="zoom-ruler-left" class="ruler ruler-left" aria-hidden="true"></svg>
-  <div id="zoom-view"><img id="zoom-image" alt="Zoomed image selection" draggable="false"><canvas id="zoom-frame" hidden></canvas><svg id="zoom-star-overlay" class="star-overlay" aria-label="Known stars" hidden></svg><svg id="zoom-box-overlay" class="box-overlay" aria-hidden="true" hidden></svg></div>
+  <div id="zoom-view"><canvas id="zoom-frame" role="img" aria-label="Zoomed part of the frame" hidden></canvas><canvas id="zoom-star-overlay" class="star-overlay" role="img" aria-label="Known stars" hidden></canvas><svg id="zoom-box-overlay" class="box-overlay" aria-hidden="true" hidden></svg></div>
   </div>
 </dialog>
 </body>

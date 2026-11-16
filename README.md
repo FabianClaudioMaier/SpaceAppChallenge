@@ -5,8 +5,9 @@ NASA Space Apps Challenge 2026, "Planet X and SPHEREx".
 Pick a spot on the sky (RA/Dec) and the app builds a time-lapse from every
 SPHEREx visit to that spot. Difference images show what changed between the
 visits, so moving objects such as asteroids, high proper-motion stars, or maybe
-a distant planet stand out. Known stars from Gaia DR3 and CatWISE2020 are
-placed on every frame at that frame's date.
+a distant planet stand out. Known objects from up to 25 catalogues (stars,
+asteroids, galaxies, variables, X-ray and radio sources) are placed on every
+frame at that frame's date.
 
 ## Requirements
 
@@ -45,26 +46,37 @@ The server only listens on `127.0.0.1` (your own computer).
 
 1. Enter **Right Ascension** and **Declination**: decimal degrees
    (`269.45404`, `4.693388`) or sexagesimal (`17:57:48.97`, `+04:41:36.2`;
-   with colons RA is in hours). You can also click the globe; turn that on in
-   Settings.
-2. **Settings:** speed (ms per frame), cutout size (50–1000 px, 1 px = 6.15″),
-   invert, show difference images, contrast and brightness (view only).
-3. **Submit.** A new spot can take a few minutes (downloads). The same request
-   again is instant (cache).
-4. **Player:** stop, play and step frame by frame. Under the image: the date of
-   the frame on screen. Around it: RA and Dec rulers. Tools right of the image
-   (or keys): **Pointer** `V` (click a star for details), **Zoom** `Z` (click or
-   drag), **Box** `B` (drag a box around something).
-5. **Stars:** "Gaia stars", "WISE sources" and "Fast movers" in Settings. They
-   follow the frame on screen; fast movers get their track and name. Click a star for
-   details: magnitudes, distance, SIMBAD/VizieR links, and its position, date
-   and movement in the frame on screen.
-
-6. **Is something moving?** **Yes** (and a box, or without one) or **No**, then
-   **Save**: a row in `middleware/saves/saves.csv` (Settings → Download saves),
-   and for "Yes" the GIFs with rulers, dates and the box burned in, at 2× up to
-   500 px, named after the box centre and the save time, e.g.
+   with colons RA is in hours), then **Submit**. A new spot can take a few
+   minutes (downloads); the same request again takes about a second (cache).
+2. **Player:** play and stop (`Space`), one frame back or forward (`,` / `.`).
+   Under the image: the date of the frame on screen. Around it: RA and Dec
+   rulers.
+3. **On the image:** click a star for its details (magnitudes, distance,
+   SIMBAD/VizieR links, its position and movement in the frame on screen).
+   Click elsewhere or drag to zoom, down to a few pixels.
+4. **Layers** (left panel): one row per catalogue.
+   - eye: show or hide; **S**: solo (only the soloed layers are shown)
+   - chevron or a click on the name: options (magnitude range, brightest or
+     faintest N, labels, marker size, hide artifacts, reload)
+   - **Select catalogue:** add one of 22 more catalogues; presets switch whole
+     sets
+   - a layer that failed to load gets a reload button (↻)
+   - each kind of object has its own shape: star = stars and infrared,
+     diamond = fast movers and nearby stars, cross = asteroids and comets,
+     triangle = galaxies and quasars, circle = variable stars, square = X-ray,
+     plus = radio, hexagon = SIMBAD names
+5. **Is something moving?** **Yes** (or `B`), then drag a box around it (or
+   don't), or **No**. **Save** adds a row to `middleware/saves/saves.csv`
+   (Settings → Download saves); for "Yes" it also writes the GIFs, see below.
+6. **Download GIF** (next to the player): the GIF on screen with the rulers,
+   each frame's UTC date, the box, the coordinate grid and the shown layers
+   burned in. Exported GIFs are enlarged to about 1000 px per frame (a 250 px
+   field 4×) and named after the box centre (or the field) and the time, e.g.
    `J220253.5-565201_20261115T194337Z.gif` (+ `_diff.gif`).
+7. **Settings:** invert, difference images, coordinate grid (near the poles,
+   always or off), globe, speed (ms per frame), cutout size (50–1000 px,
+   1 px = 6.15″), contrast and brightness (view only), **Reset to defaults**.
+   The panels left and right can be resized by dragging their inner edge.
 
 Example: Barnard's star, RA `269.45404`, Dec `4.693388`, 250 px. It creeps
 about 1.7 px north per year across the frames.
@@ -84,8 +96,16 @@ browser (frontend/)
 |---|---|
 | `POST /api/send-to-backend` | `{DEC, RA, PIXELS, MS}` → `{uuid, json}` (`json` = the job's `meta.json`) |
 | `GET /api/videos/<uuid>.gif` | the frames; `<uuid>_diff.gif` the difference images |
-| `POST /api/save` | `{uuid, ra, dec, pixels, collections, verdict, box, frame_shown, view, frame_utc, detectors}` → a row in `middleware/saves/saves.csv` + the exported GIFs (`middleware/export.py`) |
+| `GET /api/catalogs` | the catalogue layers that can be added |
+| `POST /api/catalog` | `{name, ra, dec, pixels, frame_mjds, refresh}` → one layer's sources in the frame; `name` `builtin` = Gaia DR3, CatWISE2020 and the fast movers together |
+| `POST /api/export` | the GIF on screen with everything shown (Download GIF) |
+| `POST /api/save` | `{uuid, ra, dec, pixels, collections, verdict, box, frame_shown, view, frame_utc, detectors, grid}` → a row in `middleware/saves/saves.csv` + the exported GIFs |
 | `GET /api/saves.csv` | the saves so far |
+
+The frames never wait for the catalogues: the page fetches each layer when it
+is switched on. Exported GIFs are drawn by worker processes
+(`middleware/export.py`, one per CPU core but one), at most 10 exports at a
+time. Backend jobs run one at a time; further requests wait for their turn.
 
 The server only answers requests addressed to `127.0.0.1:<port>` / `localhost:<port>`,
 and API calls only from its own page (JSON, no foreign `Origin`), so other web pages
@@ -121,9 +141,11 @@ Output goes to `Cache/usr/<UUID>/`: `frame_000.jpg …` (oldest first),
 |---|---|
 | SPHEREx images: which ones cover a spot | IRSA (NASA/IPAC) image search |
 | SPHEREx images: the files | AWS bucket `nasa-irsa-spherex`, IRSA as fallback |
-| Star overlays | Gaia DR3 (`I/355/gaiadr3`) and CatWISE2020 (`II/365/catwise`) via VizieR |
+| Built-in layers | Gaia DR3 (`I/355/gaiadr3`) and CatWISE2020 (`II/365/catwise`) via VizieR |
 | Star names, types | SIMBAD |
 | Known fast movers | SIMBAD (proper motion ≥ 200 mas/yr) |
+| More layers | 2MASS, unWISE, AllWISE, Pan-STARRS1, SkyMapper, VISTA VHS, galaxies, quasars, variables, X-ray and radio catalogues via VizieR (`python-backend/catalogs.py`) |
+| Known asteroids and comets | IMCCE SkyBoT, one query per frame date |
 | Earth texture | three.js example textures |
 
 VizieR and SIMBAD are run by CDS (Strasbourg); the backend falls back to their
@@ -132,7 +154,7 @@ CfA (Harvard) mirror automatically.
 ## Cache
 
 Everything downloaded is kept in `python-backend/Cache/`: image lists,
-headers, image cutouts, star catalogues and finished results (an identical
+headers, image cutouts, catalogue layers and finished results (an identical
 request is copied instead of rebuilt). Over 128 GiB, the entries used longest
 ago are deleted. It is safe to delete the cache while nothing is running; it
 is rebuilt on demand.
@@ -146,20 +168,21 @@ is rebuilt on demand.
   files are served without cache headers.
 - **Port already in use:** start on a port other than 5173, e.g.
   `PORT=5174 ./start.sh`
-- **`overlays` is `null` in meta.json:** VizieR/SIMBAD were unreachable. The
-  frames are still fine; the next request tries again.
+- **A layer shows "failed":** its catalogue server didn't answer. The frames
+  are not affected; click ↻ to try again.
 
 ## Project structure
 
 ```
-frontend/        index.html, app.js, style.css (UI, globe, player),
-                 star-overlay.js (star markers), viewer.js (tools, rulers, box, Save)
+frontend/        index.html, app.js, style.css (UI, globe, player, zoom),
+                 layers.js (layer list), star-overlay.js (markers, coordinate grid),
+                 viewer.js (rulers, box, Save, Download GIF, panel widths)
 middleware/      server.py (HTTP server + API), middleware.py (runs the backend,
-                 builds GIFs, saves), export.py (saved GIFs), clean_cache.py,
+                 builds GIFs, saves), export.py (exported GIFs), clean_cache.py,
                  saves/ (saves.csv + exported GIFs)
 python-backend/  backend.py (search, download, align, stack, render),
-                 detectors.py (stacking), overlays.py (Gaia/CatWISE stars),
-                 requirements.txt, setup_venv.sh, Cache/
+                 detectors.py (stacking), overlays.py (built-in layers),
+                 catalogs.py (more layers), requirements.txt, setup_venv.sh, Cache/
 start.sh         sets up the venv and starts server + cache cleaner
 ```
 
@@ -168,4 +191,5 @@ start.sh         sets up the venv and starts server + cache cleaner
 SPHEREx data from NASA/IPAC Infrared Science Archive (IRSA). Gaia DR3 by ESA
 (Gaia/DPAC). CatWISE2020 (Marocco et al. 2021, ApJS 253, 8). This research
 used the SIMBAD database and the VizieR catalogue access tool, CDS,
-Strasbourg, France. Earth texture from the three.js examples.
+Strasbourg, France. Known asteroids and comets from SkyBoT (IMCCE,
+Observatoire de Paris). Earth texture from the three.js examples.

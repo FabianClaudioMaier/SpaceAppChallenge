@@ -12,13 +12,25 @@ from uuid import UUID
 
 import traceback
 
-from middleware import BackendError, catalogLayer, catalogList, downloadCSV, main, save
+from middleware import BackendError, catalogLayer, catalogList, downloadCSV, exportView, main, save, validateJob
 
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 VIDEO_CACHE_DIR = Path(__file__).resolve().parent / "video_cache"
 
 
+class Server(ThreadingHTTPServer):
+    # Connections waiting to be accepted. The default (5) reset connections as soon
+    # as ~8 requests came at once - e.g. a page load fetching many catalogue layers,
+    # or Saves (measured: 2 of 10 parallel Saves lost).
+    request_queue_size = 128
+
+
 class Handler(SimpleHTTPRequestHandler):
+    # A connection silent this long (request or body never finished) is closed,
+    # instead of keeping its thread forever. Only waiting for the client counts:
+    # a long job doesn't.
+    timeout = 60
+
     # Set in __main__ from the port: the only Host headers answered.
     # Other pages open in the same browser can't use this server:
     #  - DNS rebinding (a foreign domain pointed at 127.0.0.1) sends a foreign Host
@@ -119,19 +131,35 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if not self.host_ok() or not self.post_ok():
             return
-        if self.path not in ("/api/send-to-backend", "/api/save", "/api/catalog"):
+        if self.path not in ("/api/send-to-backend", "/api/save", "/api/catalog", "/api/export"):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            max_length = 65536 if self.path in ("/api/save", "/api/catalog") else 4096
+            # /api/export: every shown star's position per frame (10,000 stars x 20 frames ~ 3 MB)
+            # /api/save: with the coordinate grid's lines (a few 100 kB)
+            max_length = {"/api/save": 2_000_000, "/api/catalog": 65536, "/api/export": 32_000_000}.get(self.path, 4096)
             if not 0 < length <= max_length:
                 raise ValueError("Invalid request size")
 
             payload = json.loads(self.rfile.read(length))
             if self.path == "/api/save":
                 self.send_json(HTTPStatus.OK, save(payload))  # save() checks the request
+                return
+            if self.path == "/api/export":
+                try:
+                    name, data = exportView(payload)  # (checks the request)
+                except FileNotFoundError as error:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/gif")
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
                 return
             if self.path == "/api/catalog":
                 try:
@@ -144,17 +172,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, layer)
                 return
 
-            DEC = payload["DEC"]
-            RA = payload["RA"]
-            PIXELS = int(payload["PIXELS"])
-            MS = int(payload["MS"])
-
-            if not isinstance(DEC, str) or not isinstance(RA, str):
-                raise ValueError("Coordinates must be strings")
-            if not 50 <= PIXELS <= 1000 or not 25 <= MS <= 1000:
-                raise ValueError("Pixel Size or Speed is outside its allowed range")
-
-            uuid, metadata = main(DEC, RA, PIXELS, MS)
+            uuid, metadata = main(*validateJob(payload))
         except BackendError as error:
             # The backend's own explanation, e.g. "DEC must be in [-90, 90] degrees, got 91"
             status = {
@@ -181,5 +199,7 @@ class Handler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5173
     Handler.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    import export
+    export.warm_up()  # the export worker processes (export.py), before the first "Download GIF"
     print(f"Serving frontend and middleware at http://127.0.0.1:{port}/", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    Server(("127.0.0.1", port), Handler).serve_forever()

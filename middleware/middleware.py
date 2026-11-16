@@ -261,6 +261,10 @@ VIEWS = ("frames", "diff")
 _ISO_TIME = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?$")
 _COLLECTION = re.compile(r"^spherex_[a-z]+\d*$")  # IRSA collection names, e.g. spherex_dr1
 _save_lock = threading.Lock()  # the server is threaded: saves must not interleave
+# "Download GIF": at most this many exports at once (one with all layers needs ~100 MB;
+# more at once aren't faster anyway - Python runs one thread at a time), the rest wait
+MAX_PARALLEL_EXPORTS = 10
+_export_slots = threading.BoundedSemaphore(MAX_PARALLEL_EXPORTS)
 
 
 def _number(value, name, low, high, whole=False):
@@ -273,6 +277,23 @@ def _number(value, name, low, high, whole=False):
     return int(value) if whole else float(value)
 
 
+def validateJob(payload):
+    '''
+    Checks a job request (POST /api/send-to-backend) -> (DEC, RA, PIXELS, MS).
+    RA/DEC stay text: the backend parses them (degrees or h:m:s / d:m:s) and says
+    what's wrong. Raises ValueError with the reason.
+    '''
+    if not isinstance(payload, dict):
+        raise ValueError("The request must be a JSON object with RA, DEC, PIXELS and MS")
+    missing = [key for key in ("RA", "DEC", "PIXELS", "MS") if key not in payload]
+    if missing:
+        raise ValueError(f"Missing in the request: {', '.join(missing)}")
+    if not isinstance(payload["RA"], str) or not isinstance(payload["DEC"], str):
+        raise ValueError("RA and DEC must be text, e.g. \"133.79\" or \"08:55:10.8\"")
+    return (payload["DEC"], payload["RA"], _number(payload["PIXELS"], "Cutout size (PIXELS)", 50, 1000, whole=True),
+            _number(payload["MS"], "Speed (MS)", 25, 1000, whole=True))
+
+
 def validateSave(payload):
     '''
     Checks a save request from the frontend and returns it cleaned up. Every
@@ -283,7 +304,7 @@ def validateSave(payload):
     Parameters:
     payload: {uuid, ra, dec, pixels, collections: [...], verdict,
               box: {x1, y1, x2, y2} | null, frame_shown: index | null, view,
-              frame_utc: [...], detectors: [...]}
+              frame_utc: [...], detectors: [...], grid: {...} | null}
               (uuid: only to find the job's GIFs in the video cache for the export)
 
     Output: the cleaned dictionary. Raises ValueError with the reason.
@@ -332,7 +353,38 @@ def validateSave(payload):
         if box["x1"] >= box["x2"] or box["y1"] >= box["y2"]:
             raise ValueError("box needs x1 < x2 and y1 < y2")
     entry["box"] = box
+    entry["grid"] = _validateGrid(payload.get("grid"), entry["pixels"])
     return entry
+
+
+_GRID_LABEL = re.compile(r"^[+\-−]?\d{1,3}(\.\d{1,4})?°$")  # "+89.75°", "−56.80°", "45°", "17.5°"
+
+
+def _validateGrid(grid, n):
+    '''The coordinate grid sent with an export / save (star-overlay.js coordinateGrid),
+    cleaned up for export.export_gif, or None. Its text for the GIF is made here.'''
+    if grid is None:
+        return None
+    if not isinstance(grid, dict):
+        raise ValueError("grid must be an object")
+    lines, labels = grid.get("lines"), grid.get("labels")
+    if not isinstance(lines, list) or len(lines) > 300 or not isinstance(labels, list) or len(labels) > 300:
+        raise ValueError("grid needs lists of lines and labels")
+    clean_lines = []
+    for line in lines:
+        if not isinstance(line, list) or not 2 <= len(line) <= 4000:
+            raise ValueError("a grid line is a list of [x, y] points")
+        if not all(isinstance(p, list) and len(p) == 2 for p in line):
+            raise ValueError("a grid point is [x, y]")
+        clean_lines.append([tuple(_number(v, "grid", -n, 2 * n) for v in p) for p in line])
+    clean_labels = []
+    for label in labels:
+        if not (isinstance(label, list) and len(label) == 3 and isinstance(label[2], str) and _GRID_LABEL.match(label[2])):
+            raise ValueError("a grid label is [x, y, text]")
+        clean_labels.append((_number(label[0], "grid", -n, 2 * n), _number(label[1], "grid", -n, 2 * n), label[2]))
+    steps = [_number(grid.get(k), k, 0.0001, 90) for k in ("dec_step", "ra_step")]
+    return {"lines": clean_lines, "labels": clean_labels,
+            "text": f"Grid: Dec every {steps[0]:g}°, RA every {steps[1]:g}°"}
 
 
 def _frameLabel(timestamp):
@@ -359,7 +411,7 @@ def _openSavesCsv():
 def save(payload):
     '''
     Saves a finding: one row in saves/saves.csv and, for "moving", the exported
-    GIFs (frames and difference images, 2x, with rulers, timestamps and the box,
+    GIFs (frames and difference images, enlarged, with rulers, timestamps and the box,
     see export.py) - as long as the job's GIFs are still in the video cache.
 
     Parameters:
@@ -392,7 +444,7 @@ def save(payload):
                 source = VIDEO_CACHE_DIR / f"{e['uuid']}{suffix}.gif"
                 if source.exists():
                     corners_px = (box["x1"], box["y1"], box["x2"], box["y2"]) if box else None
-                    data = export.export_gif(source.read_bytes(), ra, dec, n, labels, corners_px)
+                    data = export.export_gif(source.read_bytes(), ra, dec, n, labels, corners_px, grid=e["grid"])
                     (SAVES_DIR / f"{base}{suffix}.gif").write_bytes(data)
                     gifs[suffix] = f"{base}{suffix}.gif"
 
@@ -439,25 +491,140 @@ def catalogList():
 
 def catalogLayer(payload):
     '''
-    One extra layer's sources in a job's frame (POST /api/catalog), fetched on
-    demand when the user switches the layer on.
+    A layer's sources in a job's frame (POST /api/catalog), fetched on demand
+    when the user switches the layer on - never during the job, so the frames
+    don't wait for the catalogue servers.
 
     Parameters:
-    payload: {name, ra, dec, pixels, frame_mjds: [...]} (the job's field and frame dates)
+    payload: {name, ra, dec, pixels, frame_mjds: [...], refresh: bool}
+             (the job's field and frame dates; name "builtin" = Gaia DR3,
+             CatWISE2020 and SIMBAD's fast movers together; refresh = ask the
+             servers again even if cached, the layer list's "Reload")
 
-    Output: the layer, see catalogs.layer. Raises ValueError if the request is invalid.
+    Output: the layer (catalogs.layer), for "builtin" {"layers": {...}, "complete"}
+    (catalogs.builtin). Raises ValueError if the request is invalid.
     '''
     cat = _catalogs()
-    if not isinstance(payload, dict) or payload.get("name") not in cat.LAYERS:
+    if not isinstance(payload, dict) or (payload.get("name") not in cat.LAYERS and payload.get("name") != "builtin"):
         raise ValueError("Unknown catalogue layer")
     mjds = payload.get("frame_mjds")
     if not isinstance(mjds, list) or not 1 <= len(mjds) <= 200:
         raise ValueError("frame_mjds must be a list of frame dates (MJD)")
     mjds = [_number(m, "frame_mjds", 40000, 90000) for m in mjds]
-    return cat.layer(payload["name"], _number(payload.get("ra"), "ra", 0, 360),
-                     _number(payload.get("dec"), "dec", -90, 90),
-                     _number(payload.get("pixels"), "pixels", 3, 2040, whole=True),
-                     mjds, BACKEND_DIR / "Cache")
+    field = (_number(payload.get("ra"), "ra", 0, 360), _number(payload.get("dec"), "dec", -90, 90),
+             _number(payload.get("pixels"), "pixels", 3, 2040, whole=True), mjds, BACKEND_DIR / "Cache")
+    refresh = payload.get("refresh") is True
+    if payload["name"] == "builtin":
+        return cat.builtin(*field, refresh=refresh)
+    return cat.layer(payload["name"], *field, refresh=refresh)
+
+
+_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_LABEL = re.compile(r"^[\w .,'()+*/:-]{1,60}$")  # star names: "eps Ind B", "2015 XF464", "HD 163774"
+MAX_EXPORT_STARS = 50_000
+
+
+def validateExport(payload):
+    '''
+    Checks a "Download GIF" request and returns it cleaned up: the job and view
+    on screen, the frame dates, an optional box and the star markers shown.
+
+    Parameters:
+    payload: {uuid, ra, dec, pixels, view, frame_utc: [...], box: {x1, y1, x2, y2} | null,
+              layers: [{shape, color: "#rrggbb", stars: [{size, kind, xy, label, track}]}],
+              grid: {lines, labels, dec_step, ra_step} | null}
+              (xy: per frame [x, y] in frame pixels or null = outside the frame then)
+
+    Output: the cleaned dictionary. Raises ValueError with the reason.
+    '''
+    if not isinstance(payload, dict):
+        raise ValueError("Export request must be a JSON object")
+    entry = {
+        "uuid": str(UUID(str(payload.get("uuid")))),
+        "ra": _number(payload.get("ra"), "ra", 0, 360),
+        "dec": _number(payload.get("dec"), "dec", -90, 90),
+        "pixels": _number(payload.get("pixels"), "pixels", 3, 2040, whole=True),
+        "view": payload.get("view"),
+    }
+    if entry["view"] not in VIEWS:
+        raise ValueError(f"view must be one of {VIEWS}")
+    times = payload.get("frame_utc")
+    if not isinstance(times, list) or not 1 <= len(times) <= 200 or \
+            not all(isinstance(t, str) and _ISO_TIME.match(t) for t in times):
+        raise ValueError("frame_utc must be a list of ISO timestamps")
+    entry["frame_utc"] = times
+    n = entry["pixels"]
+    box = payload.get("box")
+    if box is not None:
+        if not isinstance(box, dict):
+            raise ValueError("box must be an object")
+        box = tuple(_number(box.get(k), k, 0, n, whole=True) for k in ("x1", "y1", "x2", "y2"))
+        if box[0] >= box[2] or box[1] >= box[3]:
+            raise ValueError("box needs x1 < x2 and y1 < y2")
+    entry["box"] = box
+    entry["grid"] = _validateGrid(payload.get("grid"), n)
+
+    layers = payload.get("layers") or []
+    if not isinstance(layers, list) or len(layers) > 100:
+        raise ValueError("layers must be a list (at most 100)")
+    total = 0
+    entry["layers"] = []
+    for layer in layers:
+        if not isinstance(layer, dict) or layer.get("shape") not in export.MARKER_SHAPES or \
+                not isinstance(layer.get("color"), str) or not _COLOUR.match(layer["color"]) or \
+                not isinstance(layer.get("stars"), list):
+            raise ValueError("each layer needs a known shape, a #rrggbb colour and a list of stars")
+        total += len(layer["stars"])
+        if total > MAX_EXPORT_STARS:
+            raise ValueError(f"at most {MAX_EXPORT_STARS} stars")
+        stars = []
+        for star in layer["stars"]:
+            xy = star.get("xy") if isinstance(star, dict) else None
+            if not isinstance(xy, list) or len(xy) != len(times):
+                raise ValueError("each star needs one position (or null) per frame")
+            positions = []
+            for p in xy:
+                if p is None:
+                    positions.append(None)
+                elif isinstance(p, list) and len(p) == 2:
+                    positions.append(tuple(_number(v, "xy", -n, 2 * n) for v in p))
+                else:
+                    raise ValueError("a position is [x, y] or null")
+            label = star.get("label")
+            if label is not None and not (isinstance(label, str) and _LABEL.match(label)):
+                label = None  # an odd name is left out, the marker stays
+            if star.get("kind") not in export.MARKER_KINDS:
+                raise ValueError(f"kind must be one of {tuple(export.MARKER_KINDS)}")
+            stars.append({"size": _number(star.get("size"), "size", 0, 2), "kind": star["kind"],
+                          "xy": positions, "label": label, "track": star.get("track") is True})
+        colour = tuple(int(layer["color"][k:k + 2], 16) for k in (1, 3, 5))
+        entry["layers"].append({"shape": layer["shape"], "colour": colour, "stars": stars})
+    return entry
+
+
+def exportView(payload):
+    '''
+    "Download GIF": the GIF on screen (frames or difference images) with the
+    rulers, each frame's UTC date, the marked box and the star markers of the
+    switched-on layers burned in (export.py, enlarged to about 1000 px). Nothing is saved.
+
+    Parameters:
+    payload: the export request (see validateExport)
+
+    Output: (file name, GIF bytes). Raises ValueError if the request is invalid,
+    FileNotFoundError if the job's GIF is no longer in the video cache.
+    '''
+    e = validateExport(payload)
+    diff = e["view"] == "diff"
+    source = VIDEO_CACHE_DIR / f"{e['uuid']}{'_diff' if diff else ''}.gif"
+    if not source.exists():
+        raise FileNotFoundError("This GIF is no longer in the cache - submit the field again")
+    labels = [_frameLabel(t) for t in e["frame_utc"]]
+    with _export_slots:
+        data = export.export_gif(source.read_bytes(), e["ra"], e["dec"], e["pixels"], labels,
+                                 e["box"], layers=e["layers"], grid=e["grid"])
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{export.j_name(e['ra'], e['dec'])}_{stamp}{'_diff' if diff else ''}.gif", data
 
 
 def downloadCSV():

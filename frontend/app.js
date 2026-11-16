@@ -14,7 +14,6 @@ const pixelSizeValue = document.querySelector("#pixel-size-value");
 const zoomSelection = document.querySelector("#zoom-selection");
 const zoomDialog = document.querySelector("#zoom-dialog");
 const zoomView = document.querySelector("#zoom-view");
-const zoomImage = document.querySelector("#zoom-image");
 const zoomFrame = document.querySelector("#zoom-frame");
 const zoomClose = document.querySelector("#zoom-close");
 const zoomBoxOverlay = document.querySelector("#zoom-box-overlay");
@@ -608,6 +607,36 @@ applyGlobeCoordinatesButton.addEventListener("click", applyPinnedGlobePoint);
 // (i) under the globe: shows / hides its legend, explanation and credit
 const globeInfoToggle = document.querySelector("#globe-info-toggle");
 const globeInfo = document.querySelector("#globe-info");
+// "Show globe" (Settings, on by default; remembered only when switched off). Its
+// two switches only show while it is on; the globe redraws itself (ResizeObserver).
+const showGlobeButton = document.querySelector("#show-globe");
+const globePanel = document.querySelector(".celestial-globe-panel");
+
+function setGlobeShown(shown) {
+  showGlobeButton.setAttribute("aria-checked", String(shown));
+  globePanel.hidden = !shown;
+  for (const row of document.querySelectorAll(".globe-mode-setting")) row.hidden = !shown;
+}
+
+showGlobeButton.addEventListener("click", () => {
+  const shown = showGlobeButton.getAttribute("aria-checked") !== "true";
+  if (shown) localStorage.removeItem("showGlobe");
+  else localStorage.setItem("showGlobe", "false");
+  setGlobeShown(shown);
+});
+setGlobeShown(localStorage.getItem("showGlobe") !== "false");
+
+// "Reset to defaults" (Settings): every remembered setting goes, then the page
+// reloads - which also resets what isn't remembered (solos, invert, speed, cutout
+// size, the globe switches). The field on screen and the typed RA/Dec stay.
+const RESET_KEYS = ["layers", "layersFolded", "panelWidths", "contrast", "brightness", "showDiff", "showGlobe", "grid",
+  "gridLabels", "tool"]; // ("tool": left over from the tool buttons)
+document.querySelector("#reset-settings").addEventListener("click", () => {
+  if (!window.confirm("Reset all settings to their defaults?\n\nThe layer list, panel widths, view and grid settings go back to how they were at the start. The field on screen stays.")) return;
+  for (const key of RESET_KEYS) localStorage.removeItem(key);
+  window.location.reload();
+});
+
 globeInfoToggle.addEventListener("click", () => {
   globeInfo.hidden = !globeInfo.hidden;
   globeInfoToggle.setAttribute("aria-expanded", String(!globeInfo.hidden));
@@ -839,9 +868,9 @@ async function requestVideoUuid() {
       if (result.json === null || typeof result.json !== "object" || Array.isArray(result.json)) {
         throw new Error("Middleware returned invalid JSON metadata");
       }
-      // Kept for the overlays, rulers and Save, also after a reload. Thousands of
-      // stars may not fit into localStorage: then they are kept in memory only
-      // (after a reload the job has no star overlays) - see shownMetadata.
+      // Kept for the layers, rulers and Save, also after a reload. (Results from
+      // before the layers were fetched on demand carry thousands of stars, which
+      // may not fit into localStorage: then those stay in memory only.)
       jobMetadataInMemory = { uuid: result.uuid, metadata: result.json };
       try {
         localStorage.setItem("videoMetadata", JSON.stringify(result.json));
@@ -876,6 +905,9 @@ coordinateForm.addEventListener("submit", async (event) => {
   }
 
   setLoading(true);
+  // The GIF behind the throbber stops while the new one is made (plays on if the job fails)
+  const wasPlaying = !isPaused && !gifControls.hidden && image.complete && image.naturalWidth > 0;
+  const pausing = wasPlaying ? pauseGif().catch(() => {}) : null;
   try {
     const uuid = await requestVideoUuid();
     stopVideoHeartbeat();
@@ -896,6 +928,10 @@ coordinateForm.addEventListener("submit", async (event) => {
       globeStatus.textContent = `Submission failed: ${error.message}`;
     }
     setLoading(false);
+    if (wasPlaying) {
+      await pausing;
+      if (isPaused) playPauseButton.click();
+    }
     alert(`Submission failed: ${error.message}`);
   }
 });
@@ -950,7 +986,7 @@ settingsButton.addEventListener("click", () => {
 function applyImageFilter() {
   const invert = invertButton.getAttribute("aria-checked") === "true";
   const filter = `${invert ? "invert(1) " : ""}contrast(${contrastInput.value}%) brightness(${brightnessInput.value}%)`;
-  for (const element of [image, pausedFrame, zoomImage, zoomFrame]) element.style.filter = filter;
+  for (const element of [image, pausedFrame, zoomFrame]) element.style.filter = filter;
 }
 
 invertButton.addEventListener("click", () => {
@@ -1011,22 +1047,14 @@ function openZoom(region, imageRect) {
   zoomView.style.width = `${Math.round(region.width * scale)}px`;
   zoomView.style.height = `${Math.round(region.height * scale)}px`;
 
-  // With the decoded frames the zoom draws the frame on screen itself (playing or
-  // stopped), in step with the page and the star markers. Without them: the GIF,
-  // or a snapshot of the stopped frame, as before.
-  const framesReady = currentFrameIndex() !== null;
-  zoomFrame.hidden = !framesReady;
-  zoomImage.hidden = framesReady;
-  if (!framesReady) zoomImage.src = pausedFrame.hidden ? image.currentSrc || image.src : pausedFrame.toDataURL();
-  for (const element of [zoomImage, zoomFrame, zoomStarOverlay, zoomBoxOverlay]) {
-    element.style.width = `${width * scale}px`;
-    element.style.height = `${height * scale}px`;
-    element.style.left = `${(left - region.left) * scale}px`;
-    element.style.top = `${(top - region.top) * scale}px`;
-  }
-  zoomImage.style.filter = image.style.filter;
-  zoomFrame.style.filter = image.style.filter; // keep "Invert GIF"
+  // The zoom draws just the zoomed part, into a canvas the size of its view
+  // (zoomTick): enlarging the whole frame instead made a tiny zoom tens of
+  // thousands of pixels wide - and slow. Its frame: the decoded frame on screen
+  // (in step with the page and the star markers), else the GIF / stopped frame.
+  zoomFrame.hidden = false;
+  zoomFrame.style.filter = image.style.filter; // keep "Invert GIF" etc.
   zoomFrameShown = null;
+  if ("ImageDecoder" in window) loadGifFrames().catch(() => {}); // (then it follows the frames exactly)
   // The zoomed part in GIF pixels: for the zoom's rulers and box (viewer.js)
   const gifPerScreen = image.naturalWidth / width;
   zoomRegion = {
@@ -1042,23 +1070,33 @@ function openZoom(region, imageRect) {
 
 let zoomFrameShown = null;
 let zoomRegion = null; // the zoomed part of the frame in GIF pixels (set by openZoom)
-// While the zoom is open, its frame and its star markers follow the frame on screen
+// While the zoom is open, its frame and its star markers follow the frame on screen.
+// Only the zoomed part is drawn, pixels kept square (no smoothing).
 function zoomTick() {
   if (!zoomDialog.open) return;
   const i = currentFrameIndex();
-  if (!zoomFrame.hidden && i !== null && i !== zoomFrameShown) {
-    zoomFrameShown = i;
-    const bitmap = gifFrames[i].bitmap;
-    zoomFrame.width = bitmap.width;
-    zoomFrame.height = bitmap.height;
-    zoomFrame.getContext("2d").drawImage(bitmap, 0, 0);
+  const source = i !== null ? gifFrames[i].bitmap : pausedFrame.hidden ? image : pausedFrame;
+  const shown = i !== null ? i : pausedFrame.hidden ? "playing" : "stopped";
+  if (shown !== zoomFrameShown || shown === "playing") { // (the playing <img>: every time)
+    zoomFrameShown = shown;
+    const ratio = window.devicePixelRatio || 1;
+    const w = Math.round(parseFloat(zoomView.style.width) * ratio);
+    const h = Math.round(parseFloat(zoomView.style.height) * ratio);
+    if (zoomFrame.width !== w || zoomFrame.height !== h) {
+      zoomFrame.width = w;
+      zoomFrame.height = h;
+    }
+    const context = zoomFrame.getContext("2d");
+    context.imageSmoothingEnabled = false;
+    const { x0, y0, x1, y1 } = zoomRegion;
+    context.drawImage(source, x0, y0, x1 - x0, y1 - y0, 0, 0, w, h);
   }
   placeZoomStarMarkers(); // (star-overlay.js)
   requestAnimationFrame(zoomTick);
 }
 
 image.addEventListener("pointerdown", (event) => {
-  if (activeTool === "pointer") return; // the pointer tool: clicks only pick stars
+  if (!throbber.hidden) return; // "Working…": a new picture is on its way, clicks do nothing
   if (activePointerId !== null || !image.naturalWidth) return;
   zoomSelection.classList.toggle("box-selection", activeTool === "box");
 
@@ -1109,15 +1147,21 @@ image.addEventListener("pointerup", (event) => {
     if (width >= 3 && height >= 3) markBoxOnScreen(Math.min(x, endX), Math.min(y, endY), width, height, rect);
     return;
   }
+  // a click on a star opens its card instead (star-overlay.js, the click after this)
+  if (width < STAR_CLICK_MOVE_PX && height < STAR_CLICK_MOVE_PX && starAt(pageStars, event.clientX, event.clientY)) return;
 
-  if (width >= 8 && height >= 8) {
+  if (width >= STAR_CLICK_MOVE_PX || height >= STAR_CLICK_MOVE_PX) {
+    // a drag: exactly the dragged part, however small - at least one GIF pixel each way
+    const onePixel = rect.width / image.naturalWidth;
+    const w = Math.max(width, onePixel);
+    const h = Math.max(height, onePixel);
     openZoom({
-      left: Math.min(x, endX),
-      top: Math.min(y, endY),
-      width,
-      height,
+      left: clamp(Math.min(x, endX), rect.left, rect.right - w),
+      top: clamp(Math.min(y, endY), rect.top, rect.bottom - h),
+      width: w,
+      height: h,
     }, rect);
-  } else {
+  } else { // a click: the default size around it
     const cropWidth = rect.width * 0.3;
     const cropHeight = rect.height * 0.3;
 
@@ -1165,7 +1209,7 @@ function showPaused(paused) {
   isPaused = paused;
   playPauseButton.classList.toggle("paused", paused); // CSS swaps the icon
   playPauseButton.setAttribute("aria-label", paused ? "Play" : "Stop");
-  playPauseButton.dataset.tooltip = paused ? "Play" : "Pause"; // text of the hover box
+  playPauseButton.dataset.tooltip = paused ? "Play (Space)" : "Pause (Space)"; // text of the hover box
 }
 
 image.addEventListener("load", () => {

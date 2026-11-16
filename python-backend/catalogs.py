@@ -1,10 +1,12 @@
 """
-Extra overlay layers, fetched when the user switches one on (frontend layer list,
-POST /api/catalog), not during the job - so adding catalogues never slows jobs.
+Overlay layers, fetched when the user switches one on (frontend layer list,
+POST /api/catalog), not during the job - so catalogues never slow jobs down,
+and a slow or failing catalogue server never stops the frames.
 
-The job itself still brings Gaia DR3, CatWISE2020 and SIMBAD's fast movers
-(overlays.py). Everything here comes in the same shape as those ("overlays" in
-meta.json), so the frontend draws them the same way:
+The three built-in layers - Gaia DR3, CatWISE2020 and SIMBAD's fast movers
+(overlays.py) - come together in one request (builtin(): CatWISE's fast movers
+are checked against Gaia, and all three get their names from SIMBAD). Every
+layer comes in the same shape, so the frontend draws them the same way:
     {label, source, group, shape, color, epoch, sort_mag, mag_system, vizier_link,
      id_prefix, faintest, selection, stars: [{id, name, simbad_id, simbad_type,
      reason, ra, dec, mag: {band: value}, pm_mas_yr, info: {label: value}}]}
@@ -45,38 +47,43 @@ VIZIER_LINK = "https://vizier.cds.unistra.fr/viz-bin/VizieR-5?"
 # in Vega nanomaggies, mag = 22.5 - 2.5 log10), the band to sort by (brightest
 # first), proper motion columns (mas/yr; positions are VizieR's J2000 ones at
 # epoch 2000), extra values for the star card {label: column}.
+# Shapes: one per kind of object - star = stars & infrared, diamond = fast movers &
+# nearby, cross = solar system, triangle = galaxies & quasars, circle = variable
+# stars, square = X-ray, plus = radio, hexagon = SIMBAD names. No two layers of the
+# same shape share a colour (the palette: cyan, orange, violet, yellow, green, red,
+# white, magenta); the built-in layers are in layers.js BUILTIN_LAYERS.
 LAYERS: dict[str, dict] = {
     # -- stars and infrared
     "twomass": dict(group="stars", label="2MASS", table="II/246/out", id="2MASS", prefix="2MASS J",
                     mags={"J": "Jmag", "H": "Hmag", "K": "Kmag"}, sort="K",
-                    shape="circle", color="#b48cff", note="J, H, K (1.2-2.2 µm), 1997-2001"),
+                    shape="star", color="#b48cff", note="J, H, K (1.2-2.2 µm), 1997-2001"),
     "unwise": dict(group="stars", label="unWISE", table="II/363/unwise", id="objID", prefix="unWISE ",
                    flux_mags={"W1": "FW1", "W2": "FW2"}, sort="W1", sort_column="-FW1",
-                   shape="square", color="#ffd84d", note="the deepest WISE catalogue, W1/W2"),
+                   shape="star", color="#ffd84d", note="the deepest WISE catalogue, W1/W2"),
     "allwise": dict(group="stars", label="AllWISE", table="II/328/allwise", id="AllWISE", prefix="AllWISE ",
                     mags={"W1": "W1mag", "W2": "W2mag", "W3": "W3mag", "W4": "W4mag"}, sort="W1",
                     info={"Artifact flags": "ccf"}, artifacts="ccf",
-                    shape="square", color="#ff8c42", note="adds W3/W4 (12/22 µm)"),
+                    shape="star", color="#ff6b6b", note="adds W3/W4 (12/22 µm)"),
     "ps1": dict(group="stars", label="Pan-STARRS1", table="II/349/ps1", id="objID", prefix="PS1 ",
                 mags={"g": "gmag", "r": "rmag", "i": "imag", "z": "zmag", "y": "ymag"}, sort="r",
-                shape="circle", color="#7cf0a0", note="deep optical, Dec > -30°"),
+                shape="star", color="#7cf0a0", note="deep optical, Dec > -30°"),
     "skymapper": dict(group="stars", label="SkyMapper DR4", table="II/379/smssdr4", id="ObjectId", prefix="SMSS ",
                       mags={"g": "gPSF", "r": "rPSF", "i": "iPSF", "z": "zPSF"}, sort="r",
-                      shape="circle", color="#7cf0a0", note="optical, southern sky"),
+                      shape="star", color="#ff5cf0", note="optical, southern sky"),
     "vhs": dict(group="stars", label="VISTA VHS", table="II/367/vhs_dr5", id="SrcID", prefix="VHS ",
                 mags={"J": "Jpmag", "H": "Hpmag", "Ks": "Kspmag"}, sort="Ks",
-                shape="square", color="#7cf0a0", note="deep near-IR, southern sky"),
+                shape="star", color="#f5f5f5", note="deep near-IR, southern sky"),
     # -- moving and nearby things
     "asteroids": dict(group="movers", label="Known asteroids & comets", special="skybot",
                       shape="cross", color="#ff6b6b", note="IMCCE SkyBoT, positions at each frame's date"),
     "bd20pc": dict(group="movers", label="Brown dwarfs ≤ 20 pc", table="J/ApJS/253/7", id="Name", prefix="",
                    mags={"J": "Jmag", "H": "Hmag", "K": "Ksmag", "W1": "W1mag", "W2": "W2mag"}, sort="W2",
                    pm=("pmRA", "pmDE"), info={"Parallax (mas)": "plx", "Spectral type code (IR)": "SpTIR"},
-                   shape="diamond", color="#ff9cf0", note="Kirkpatrick+ 2021"),
+                   shape="diamond", color="#ffd84d", note="Kirkpatrick+ 2021"),
     "gcns": dict(group="movers", label="Nearby stars ≤ 100 pc", table="J/A+A/649/A6", id="GaiaEDR3",
                  prefix="Gaia EDR3 ", mags={"G": "Gmag", "BP": "BPmag", "RP": "RPmag"}, sort="G",
                  pm=("pmRA", "pmDE"), info={"Parallax (mas)": "Plx", "Distance (kpc)": "Dist50"},
-                 shape="diamond", color="#c79cff", note="Gaia Catalogue of Nearby Stars"),
+                 shape="diamond", color="#4fe3ff", note="Gaia Catalogue of Nearby Stars"),
     # -- galaxies and quasars
     "twomassx": dict(group="galaxies", label="2MASS galaxies (XSC)", table="VII/233/xsc", id="2MASX",
                      prefix="2MASX J", mags={"J": "J.ext", "H": "H.ext", "K": "K.ext"}, sort="K",
@@ -84,39 +91,39 @@ LAYERS: dict[str, dict] = {
     "gladep": dict(group="galaxies", label="GLADE+ galaxies", table="VII/291/gladep", id="GLADE+", prefix="GLADE+ ",
                    mags={"B": "Bmag", "J": "Jmag", "K": "Kmag", "W1": "W1mag"}, sort="K",
                    info={"Redshift": "zcmb", "Type": "Type"},
-                   shape="triangle", color="#dcdcdc", note="galaxies and quasars with distances"),
+                   shape="triangle", color="#7cf0a0", note="galaxies and quasars with distances"),
     "wiseagn": dict(group="galaxies", label="WISE AGN (R90)", table="J/ApJS/234/23/r90cat", id="WISEA",
                     prefix="WISEA ", mags={"W1": "W1mag", "W2": "W2mag", "W3": "W3mag"}, sort="W1",
-                    shape="triangle", color="#ff9f43", note="mid-IR selected AGN (red, variable)"),
+                    shape="triangle", color="#ffa53d", note="mid-IR selected AGN (red, variable)"),
     "gaiaqso": dict(group="galaxies", label="Gaia DR3 quasar candidates", table="I/356/qsocand", id="Source",
                     prefix="Gaia DR3 ", info={"Redshift": "z", "Quasar probability": "PQSO"},
-                    shape="triangle", color="#ffb86b", note=""),
+                    shape="triangle", color="#4fe3ff", note=""),
     "milliquas": dict(group="galaxies", label="Milliquas quasars", table="VII/294/catalog", id="Name", prefix="",
                       mags={"R": "Rmag", "B": "Bmag"}, sort="R", info={"Redshift": "z", "Type": "Type"},
-                      shape="triangle", color="#ffd2a1", note="Flesch 2023"),
+                      shape="triangle", color="#b48cff", note="Flesch 2023"),
     # -- variables
     "vsx": dict(group="variables", label="VSX variable stars", table="B/vsx/vsx", id="Name", prefix="",
                 mags={"max": "max"}, sort="max", info={"Type": "Type", "Period (d)": "Period"},
-                shape="circle", color="#ff5c8a", note="AAVSO"),
+                shape="circle", color="#ffd84d", note="AAVSO"),
     "gaiavar": dict(group="variables", label="Gaia DR3 variables", table="I/358/vclassre", id="Source",
                     prefix="Gaia DR3 ", info={"Class": "Class"},
-                    shape="circle", color="#ff7aa8", note="variability classes"),
+                    shape="circle", color="#4fe3ff", note="variability classes"),
     # -- x-ray and radio
     "erass1": dict(group="xray_radio", label="eROSITA eRASS1 (X-ray)", table="J/A+A/682/A34", id="IAUName",
                    prefix="", info={"Flux 0.2-2.3 keV (erg/s/cm²)": "MLFlux1"},
-                   shape="cross", color="#9fd0ff", note="western Galactic half"),
+                   shape="square", color="#4fe3ff", note="western Galactic half"),
     "csc": dict(group="xray_radio", label="Chandra CSC 2 (X-ray)", table="IX/57/csc2master", id="2CXO",
-                prefix="2CXO ", shape="cross", color="#9fd0ff", note="pointed observations"),
+                prefix="2CXO ", shape="square", color="#b48cff", note="pointed observations"),
     "nvss": dict(group="xray_radio", label="NVSS (radio)", table="VIII/65/nvss", id="NVSS", prefix="NVSS ",
-                 info={"1.4 GHz (mJy)": "S1.4"}, shape="cross", color="#c8ff9f", note="Dec > -40°"),
+                 info={"1.4 GHz (mJy)": "S1.4"}, shape="plus", color="#7cf0a0", note="Dec > -40°"),
     "sumss": dict(group="xray_radio", label="SUMSS (radio)", table="VIII/81B/sumss212", id="recno",
-                  prefix="SUMSS #", info={"843 MHz (mJy)": "St"}, shape="cross", color="#c8ff9f",
+                  prefix="SUMSS #", info={"843 MHz (mJy)": "St"}, shape="plus", color="#ffd84d",
                   note="Dec < -30°"),
     "vlass": dict(group="xray_radio", label="VLASS (radio)", table="J/ApJS/255/30", id="CompName", prefix="",
-                  info={"3 GHz (mJy)": "Ftot"}, shape="cross", color="#c8ff9f", note="Dec > -40°"),
+                  info={"3 GHz (mJy)": "Ftot"}, shape="plus", color="#4fe3ff", note="Dec > -40°"),
     # -- names
     "simbad_all": dict(group="names", label="SIMBAD: every object", special="simbad",
-                       shape="circle", color="#ffffff", note="names and types of everything known"),
+                       shape="hexagon", color="#f5f5f5", note="names and types of everything known"),
 }
 
 GROUPS = {"stars": "Stars & infrared", "movers": "Moving & nearby", "galaxies": "Galaxies & quasars",
@@ -202,10 +209,11 @@ def _sexagesimal(text: str, hours: bool) -> float | None:
     return sign * value * (15.0 if hours else 1.0)
 
 
-def _skybot_frame(ra: float, dec: float, radius: float, mjd: float, cache: Path) -> list[dict]:
+def _skybot_frame(ra: float, dec: float, radius: float, mjd: float, cache: Path,
+                  refresh: bool = False) -> list[dict]:
     """Known solar-system objects in the circle at one date (cached per date)."""
     path = cache / f"mjd{mjd:.5f}.json"
-    cached = _read_json(path)
+    cached = None if refresh else _read_json(path)
     if cached is not None:
         return cached
     r = requests.get(SKYBOT_URL, timeout=60, params={
@@ -229,9 +237,10 @@ def _skybot_frame(ra: float, dec: float, radius: float, mjd: float, cache: Path)
     return objects
 
 
-def _skybot_stars(ra: float, dec: float, radius: float, frame_mjds: list[float], cache: Path) -> list[dict]:
+def _skybot_stars(ra: float, dec: float, radius: float, frame_mjds: list[float], cache: Path,
+                  refresh: bool = False) -> list[dict]:
     with ThreadPoolExecutor(6) as pool:  # (one query per frame date; SkyBoT answers in ~1-3 s)
-        per_frame = list(pool.map(lambda mjd: _skybot_frame(ra, dec, radius, mjd, cache), frame_mjds))
+        per_frame = list(pool.map(lambda mjd: _skybot_frame(ra, dec, radius, mjd, cache, refresh), frame_mjds))
     found: dict[str, dict] = {}
     for i, objects in enumerate(per_frame):
         for o in objects:
@@ -247,20 +256,22 @@ def _skybot_stars(ra: float, dec: float, radius: float, frame_mjds: list[float],
 # --------------------------------------------------------------------------- #
 # A layer for one frame
 # --------------------------------------------------------------------------- #
-def layer(name: str, ra: float, dec: float, pixels: int, frame_mjds: list[float], cache_dir: Path) -> dict:
+def layer(name: str, ra: float, dec: float, pixels: int, frame_mjds: list[float], cache_dir: Path,
+          refresh: bool = False) -> dict:
     """One layer's sources in the frame (see the module docstring). Raises KeyError
-    for an unknown layer, CatalogError if the servers can't be reached."""
+    for an unknown layer, CatalogError if the servers can't be reached. refresh =
+    ask the servers again even if cached (the layer list's "Reload")."""
     info = LAYERS[name]
     radius = search_radius_arcmin(pixels)
     folder = cache_dir / "catalogs" / f"layer_{name}"
     coord = f"ra{ra:09.5f}_dec{dec:+09.5f}_p{pixels}"
     epoch = 2000.0  # VizieR's _RAJ2000/_DEJ2000 and SIMBAD's positions
     if info.get("special") == "skybot":
-        stars = _skybot_stars(ra, dec, radius, frame_mjds, folder / coord)
+        stars = _skybot_stars(ra, dec, radius, frame_mjds, folder / coord, refresh)
         epoch = None
     else:
         path = folder / f"{coord}_r{MAX_ROWS}.json"
-        stars = _read_json(path)
+        stars = None if refresh else _read_json(path)
         if stars is None:
             stars = (_simbad_stars(ra, dec, radius) if info.get("special") == "simbad"
                      else _vizier_stars(info, ra, dec, radius))
@@ -315,3 +326,15 @@ def layer(name: str, ra: float, dec: float, pixels: int, frame_mjds: list[float]
                       if faintest is not None else "every source in the frame"),
         "stars": out,
     }
+
+
+def builtin(ra: float, dec: float, pixels: int, frame_mjds: list[float], cache_dir: Path,
+            refresh: bool = False) -> dict:
+    """The three built-in layers (overlays.py: Gaia DR3, CatWISE2020, SIMBAD's fast
+    movers) -> {"layers": {name: layer, or None if its server failed}, "complete"}.
+    They come together: CatWISE's fast movers are checked against Gaia, and all
+    three get their names from SIMBAD in one go."""
+    from backend import make_grid_wcs  # (backend doesn't import this module)
+    found, complete = overlays.fetch(ra, dec, pixels, cache_dir, refresh)
+    placed = overlays.place(found, make_grid_wcs(ra, dec, pixels), pixels, frame_mjds)
+    return {"layers": placed, "complete": complete}

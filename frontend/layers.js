@@ -1,22 +1,30 @@
 // Layers: the list in the left panel saying which catalogues are drawn over the
 // frame, and how (star-overlay.js draws what visibleLayers() returns).
 //
-//   built in   every job brings them (python-backend/overlays.py): Gaia DR3,
-//              CatWISE2020, SIMBAD's fast movers
-//   extra      fetched when switched on, for the job on screen (POST /api/catalog,
-//              python-backend/catalogs.py): 2MASS, unWISE, known asteroids, galaxies,
-//              variables, X-ray, radio, ... ("+ Add catalogue")
+//   built in   Gaia DR3, CatWISE2020, SIMBAD's fast movers (python-backend/overlays.py),
+//              fetched together (POST /api/catalog "builtin", catalogs.builtin)
+//   extra      2MASS, unWISE, known asteroids, galaxies, variables, X-ray, radio, ...
+//              ("+ Add catalogue"; POST /api/catalog, python-backend/catalogs.py)
+// Both are fetched when switched on, for the job on screen - never during the job,
+// so the frames don't wait for catalogue servers. A layer that failed gets a
+// reload button (↻) instead of its chevron; "Reload" in the options asks again anyway.
+// The whole list folds into its heading (chevron left of "Layers", remembered in
+// "layersFolded"; in the one-column layout it starts folded).
 //
-// Per layer (remembered in localStorage "layers"): on/off (the eye), and behind
-// "⋯": a magnitude range, all / brightest N / faintest N, labels, marker size,
+// Per layer (remembered in localStorage "layers"): on/off (the eye), and behind its
+// chevron (or a click on its name): a magnitude range, all / brightest N / faintest N, labels, marker size,
 // hide artifacts (catalogues with artifact flags). Presets switch whole sets.
+// "S" next to the eye (or shift+click on the eye): solo, like in a mixer - only
+// the soloed layers are drawn (several can be), the other switches stay as they
+// are and count again when the last solo ends. The solos aren't remembered.
 //
 // Uses app.js / star-overlay.js names: currentVideoUuid, shownMetadata,
 // buildStarOverlay, prepareCatalog, svgElement, formatNumber.
 
 const BUILTIN_LAYERS = {
-  gaia_dr3: { label: "Gaia DR3", group: "stars", shape: "circle", color: "#4fe3ff" },
-  catwise2020: { label: "CatWISE2020", group: "stars", shape: "square", color: "#ffa53d" },
+  // (shapes and colours: see catalogs.py LAYERS - one shape per kind of object)
+  gaia_dr3: { label: "Gaia DR3", group: "stars", shape: "star", color: "#4fe3ff" },
+  catwise2020: { label: "CatWISE2020", group: "stars", shape: "star", color: "#ffa53d" },
   simbad_movers: { label: "Fast movers (SIMBAD)", group: "movers", shape: "diamond", color: "#ff5cf0" },
 };
 const DEFAULT_LAYERS = ["gaia_dr3", "catwise2020", "simbad_movers", "asteroids", "twomass"];
@@ -43,6 +51,7 @@ let layerRegistry = { groups: {}, layers: {} }; // extra layers (GET /api/catalo
 let layersVersion = 0; // changes whenever what is drawn changes (star-overlay.js rebuilds)
 const layerData = new Map(); // "<uuid>|<layer>" -> { status: "loading" | "ok" | "failed", catalog, error }
 let openLayer = null; // the layer whose "⋯" options are open
+const soloLayers = new Set(); // the layers soloed ("S"); empty = no solo
 
 // ---- State (remembered) ----
 const layerState = (() => {
@@ -74,55 +83,79 @@ function layerChanged() {
   buildStarOverlay(); // (star-overlay.js)
 }
 
-// ---- Data: built-in layers come with the job, extra ones are fetched ----
+// ---- Data: fetched per job when switched on ----
 function layerCatalog(key, metadata) {
-  if (BUILTIN_LAYERS[key]) return metadata?.overlays?.[key] ?? null;
   return layerData.get(`${metadata?.uuid}|${key}`)?.catalog ?? null;
 }
 
 function layerStatus(key, metadata) {
   if (!metadata) return { text: "–" };
-  if (BUILTIN_LAYERS[key]) {
-    return metadata.overlays?.[key] ? { ok: true } : { text: "not available" };
-  }
   const entry = layerData.get(`${metadata.uuid}|${key}`);
-  if (!entry) return { text: layerState.options[key]?.on ? "…" : "off" };
+  if (!entry) return { text: layerState.options[key]?.on || soloLayers.has(key) ? "…" : "off" };
   if (entry.status === "loading") return { text: "loading…" };
   if (entry.status === "failed") return { text: "failed", title: entry.error };
   return { ok: true };
 }
 
-async function fetchLayer(key, metadata) {
-  const id = `${metadata.uuid}|${key}`;
-  if (layerData.has(id)) return;
-  layerData.set(id, { status: "loading" });
+// POST /api/catalog for the job on screen; refresh = the server asks the catalogue
+// servers again even if it has the layer cached
+async function requestCatalog(name, metadata, refresh) {
+  const response = await fetch("/api/catalog", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name, ra: metadata.ra, dec: metadata.dec, pixels: metadata.pixels,
+      frame_mjds: metadata.frames.map((f) => f.mjd_mean), refresh,
+    }),
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(result?.error ?? `HTTP ${response.status}`);
+  return result;
+}
+
+// One layer, or for a built-in one all three (they come together: catalogs.builtin)
+async function fetchLayer(key, metadata, refresh = false) {
+  const keys = BUILTIN_LAYERS[key] ? Object.keys(BUILTIN_LAYERS) : [key];
+  const ids = keys.map((k) => `${metadata.uuid}|${k}`);
+  if (ids.some((id) => layerData.has(id))) return; // (loading or loaded; reloadLayer clears first)
+  for (const id of ids) layerData.set(id, { status: "loading" });
   renderLayerList();
   try {
-    const response = await fetch("/api/catalog", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: key, ra: metadata.ra, dec: metadata.dec, pixels: metadata.pixels,
-        frame_mjds: metadata.frames.map((f) => f.mjd_mean),
-      }),
+    const result = await requestCatalog(BUILTIN_LAYERS[key] ? "builtin" : key, metadata, refresh);
+    const catalogs = BUILTIN_LAYERS[key] ? result.layers : { [key]: result };
+    keys.forEach((k, i) => {
+      const catalog = catalogs[k];
+      if (catalog) {
+        prepareCatalog(catalog, metadata); // (star-overlay.js) positions per frame, links
+        layerData.set(ids[i], { status: "ok", catalog });
+      } else { // (a built-in one whose server failed)
+        layerData.set(ids[i], { status: "failed", error: "the catalogue server didn't answer" });
+      }
     });
-    const result = await response.json().catch(() => null);
-    if (!response.ok) throw new Error(result?.error ?? `HTTP ${response.status}`);
-    prepareCatalog(result, metadata); // (star-overlay.js) positions per frame, links
-    layerData.set(id, { status: "ok", catalog: result });
   } catch (error) {
     console.warn(`Layer ${key} could not be loaded:`, error);
-    layerData.set(id, { status: "failed", error: error.message });
+    for (const id of ids) layerData.set(id, { status: "failed", error: error.message });
   }
   layersVersion += 1;
   renderLayerList();
+}
+
+// ↻ (failed): ask again, what the server has cached is reused (failures never are);
+// "Reload" (options, refresh): the server asks the catalogue servers again.
+// Either way the old answer is dropped right away (the row shows "loading…").
+function reloadLayer(key, refresh = false) {
+  const metadata = shownMetadata();
+  if (!metadata) return;
+  const keys = BUILTIN_LAYERS[key] ? Object.keys(BUILTIN_LAYERS) : [key];
+  for (const k of keys) layerData.delete(`${metadata.uuid}|${k}`);
+  void fetchLayer(key, metadata, refresh);
 }
 
 // Fetch the switched-on extra layers of the job on screen that aren't there yet
 function loadLayers(metadata) {
   if (!metadata) return;
   for (const key of layerState.order) {
-    if (!BUILTIN_LAYERS[key] && layerState.options[key]?.on && layerRegistry.layers[key]) {
+    if ((layerState.options[key]?.on || soloLayers.has(key)) && (BUILTIN_LAYERS[key] || layerRegistry.layers[key])) {
       void fetchLayer(key, metadata);
     }
   }
@@ -130,28 +163,31 @@ function loadLayers(metadata) {
 
 // ---- What star-overlay.js draws ----
 function anyLayerOn() {
-  return layerState.order.some((key) => layerState.options[key]?.on);
+  return soloLayers.size > 0 || layerState.order.some((key) => layerState.options[key]?.on);
 }
 
 // The stars of a layer after its options (magnitude range, brightest / faintest N,
-// artifacts); fast movers always stay
+// artifacts); fast movers always stay - the ones found among a catalogue's stars
+// (Gaia, CatWISE), not objects with their own position per frame (the known
+// asteroids: all of them move, so the options apply to them like to any layer)
 function filterLayerStars(catalog, options) {
   const band = catalog.sort_mag;
   const magOf = (s) => (band ? s.mag?.[band] : null);
+  const alwaysShown = (s) => s.reason.includes("fast") && !s.positions;
   let stars = catalog.stars.filter((s) => !(options.hideArtifacts && s.artifact));
   if (band && (options.magMin !== null || options.magMax !== null)) {
     stars = stars.filter((s) => {
       const m = magOf(s);
-      if (m === null || m === undefined) return s.reason.includes("fast");
+      if (m === null || m === undefined) return alwaysShown(s);
       return (options.magMin === null || m >= options.magMin) && (options.magMax === null || m <= options.magMax)
-        || s.reason.includes("fast");
+        || alwaysShown(s);
     });
   }
   if (options.show !== "all" && band) {
     const measured = stars.filter((s) => magOf(s) !== null && magOf(s) !== undefined);
     const picked = new Set(options.show === "brightest"
       ? measured.slice(0, options.count) : measured.slice(-options.count));
-    stars = stars.filter((s) => picked.has(s) || s.reason.includes("fast"));
+    stars = stars.filter((s) => picked.has(s) || alwaysShown(s));
   }
   return stars;
 }
@@ -162,7 +198,8 @@ function visibleLayers(metadata) {
   const out = [];
   for (const key of [...layerState.order].reverse()) {
     const options = layerState.options[key];
-    const catalog = options?.on ? layerCatalog(key, metadata) : null;
+    const shown = soloLayers.size ? soloLayers.has(key) : options?.on;
+    const catalog = shown ? layerCatalog(key, metadata) : null;
     if (!catalog) continue;
     const info = layerInfo(key);
     out.push({ key, catalog, options, stars: filterLayerStars(catalog, options),
@@ -178,9 +215,72 @@ const SHAPE_PATHS = {
   diamond: (r) => svgElement("rect", { x: -0.75 * r, y: -0.75 * r, width: 1.5 * r, height: 1.5 * r, transform: "rotate(45)" }),
   triangle: (r) => svgElement("path", { d: `M0 ${-r}L${0.87 * r} ${0.5 * r}L${-0.87 * r} ${0.5 * r}Z` }),
   cross: (r) => svgElement("path", { d: `M${-0.8 * r} ${-0.8 * r}L${0.8 * r} ${0.8 * r}M${0.8 * r} ${-0.8 * r}L${-0.8 * r} ${0.8 * r}` }),
+  plus: (r) => svgElement("path", { d: `M${-r} 0H${r}M0 ${-r}V${r}` }),
+  star: (r) => svgElement("path", { d: `M${starPoints(r).map(([x, y]) => `${x} ${y}`).join("L")}Z` }),
+  hexagon: (r) => svgElement("path", { d: `M${hexagonPoints(r).map(([x, y]) => `${x} ${y}`).join("L")}Z` }),
 };
 
-// A marker shape centred on (0, 0) (also used on the frame, star-overlay.js)
+// Corners of the star (five points, inner corners at 0.45 r) and the hexagon, centred on (0, 0)
+function starPoints(r) {
+  return Array.from({ length: 10 }, (_, k) => {
+    const d = k % 2 === 0 ? r : 0.45 * r;
+    return [d * Math.sin((Math.PI * k) / 5), -d * Math.cos((Math.PI * k) / 5)];
+  });
+}
+
+function hexagonPoints(r) {
+  return Array.from({ length: 6 }, (_, k) => [r * Math.cos((Math.PI / 3) * k + Math.PI / 6),
+    r * Math.sin((Math.PI / 3) * k + Math.PI / 6)]);
+}
+
+// The same shapes on the frame's canvas (star-overlay.js), centred on (x, y):
+// added to a Path2D, so a whole layer is stroked at once
+const SHAPE_TRACERS = {
+  circle: (path, x, y, r) => {
+    path.moveTo(x + r, y);
+    path.arc(x, y, r, 0, 2 * Math.PI);
+  },
+  square: (path, x, y, r) => path.rect(x - 0.9 * r, y - 0.9 * r, 1.8 * r, 1.8 * r),
+  diamond: (path, x, y, r) => { // the 1.5 r square turned by 45°
+    const d = 0.75 * Math.SQRT2 * r;
+    path.moveTo(x, y - d);
+    path.lineTo(x + d, y);
+    path.lineTo(x, y + d);
+    path.lineTo(x - d, y);
+    path.closePath();
+  },
+  triangle: (path, x, y, r) => {
+    path.moveTo(x, y - r);
+    path.lineTo(x + 0.87 * r, y + 0.5 * r);
+    path.lineTo(x - 0.87 * r, y + 0.5 * r);
+    path.closePath();
+  },
+  cross: (path, x, y, r) => {
+    path.moveTo(x - 0.8 * r, y - 0.8 * r);
+    path.lineTo(x + 0.8 * r, y + 0.8 * r);
+    path.moveTo(x + 0.8 * r, y - 0.8 * r);
+    path.lineTo(x - 0.8 * r, y + 0.8 * r);
+  },
+  plus: (path, x, y, r) => {
+    path.moveTo(x - r, y);
+    path.lineTo(x + r, y);
+    path.moveTo(x, y - r);
+    path.lineTo(x, y + r);
+  },
+  star: (path, x, y, r) => tracePolygon(path, x, y, starPoints(r)),
+  hexagon: (path, x, y, r) => tracePolygon(path, x, y, hexagonPoints(r)),
+};
+
+function tracePolygon(path, x, y, points) {
+  points.forEach(([px, py], i) => (i === 0 ? path.moveTo(x + px, y + py) : path.lineTo(x + px, y + py)));
+  path.closePath();
+}
+
+function traceShape(path, shape, x, y, r) {
+  (SHAPE_TRACERS[shape] ?? SHAPE_TRACERS.circle)(path, x, y, r);
+}
+
+// A marker shape centred on (0, 0), for the list's symbols (the frame uses traceShape)
 function shapeElement(shape, r) {
   return (SHAPE_PATHS[shape] ?? SHAPE_PATHS.circle)(r);
 }
@@ -284,12 +384,18 @@ function layerOptionsElement(key, metadata) {
   }
 
   if (catalog?.source) box.append(element("p", { class: "layer-source" }, `${catalog.source}. ${catalog.selection ?? ""}`));
+  const reload = element("button", { type: "button", class: "layer-reload" }, "Reload");
+  reload.title = BUILTIN_LAYERS[key] ? "Ask the catalogue servers again (Gaia, CatWISE and the fast movers come together)"
+    : "Ask the catalogue servers again";
+  reload.addEventListener("click", () => reloadLayer(key, true));
+  box.append(reload);
   if (!BUILTIN_LAYERS[key]) {
     const remove = element("button", { type: "button", class: "layer-remove" }, "Remove from the list");
     remove.addEventListener("click", () => {
       layerState.order = layerState.order.filter((k) => k !== key);
       delete layerState.options[key];
       openLayer = null;
+      soloLayers.delete(key);
       layerChanged();
       renderLayerList();
     });
@@ -328,26 +434,56 @@ function renderLayerList() {
   for (const key of layerState.order) {
     const options = layerState.options[key];
     const info = layerInfo(key);
-    const row = element("li", { class: `layer-row${options.on ? "" : " layer-off"}${openLayer === key ? " layer-open" : ""}` });
+    // while a layer is solo: it stands out, the others are dimmed (their eyes keep
+    // saying what comes back when the solo ends)
+    const solo = soloLayers.has(key) ? " layer-solo" : soloLayers.size ? " layer-muted" : options.on ? "" : " layer-off";
+    const row = element("li", { class: `layer-row${solo}${openLayer === key ? " layer-open" : ""}` });
     const eye = element("button", { type: "button", class: "layer-eye", "aria-pressed": String(options.on),
-      "aria-label": `Show ${info.label}`, title: options.on ? "Hide" : "Show" });
-    eye.addEventListener("click", () => {
+      "aria-label": `Show ${info.label}`,
+      title: options.on ? "Hide" : "Show" });
+    const toggleSolo = () => {
+      if (!soloLayers.delete(key)) soloLayers.add(key);
+      layerChanged();
+      loadLayers(shownMetadata());
+      renderLayerList();
+    };
+    eye.addEventListener("click", (event) => {
+      if (event.shiftKey) {
+        toggleSolo();
+        return;
+      }
       options.on = !options.on;
       layerPresetInput.value = matchingPreset();
       layerChanged();
       loadLayers(shownMetadata());
       renderLayerList();
     });
+    const soloButton = element("button", { type: "button", class: "layer-solo-button", "aria-pressed": String(soloLayers.has(key)),
+      "aria-label": `Solo ${info.label}`, title: soloLayers.has(key) ? "Solo off" : "Solo: show only the soloed layers" }, "S");
+    soloButton.addEventListener("click", toggleSolo);
     const name = element("span", { class: "layer-name", title: info.note ?? "" }, info.label);
     const count = element("span", { class: "layer-count" });
     layerCountCells.set(key, count);
-    const more = element("button", { type: "button", class: "layer-more", "aria-expanded": String(openLayer === key),
-      "aria-label": `${info.label} options`, title: "Options" }, "⋯");
-    more.addEventListener("click", () => {
+    const failed = layerData.get(`${metadata?.uuid}|${key}`)?.status === "failed";
+    const more = failed
+      ? element("button", { type: "button", class: "layer-more layer-retry", "aria-label": `Reload ${info.label}`,
+        title: "Failed - reload" }, "↻")
+      : element("button", { type: "button", class: "layer-more", "aria-expanded": String(openLayer === key),
+        "aria-label": `${info.label} options`, title: openLayer === key ? "Close the options" : "Options" });
+    if (!failed) more.append(element("span", { class: "chevron", "aria-hidden": "true" }));
+    const toggleOptions = () => {
       openLayer = openLayer === key ? null : key;
       renderLayerList();
+    };
+    more.addEventListener("click", () => {
+      if (failed) {
+        reloadLayer(key); // (the row shows "loading…" and its chevron again right away)
+        return;
+      }
+      toggleOptions();
     });
-    row.append(eye, symbolSvg(info.shape, info.color), name, count, more);
+    name.addEventListener("click", toggleOptions);
+    row.append(eye, soloButton, symbolSvg(info.shape, info.color), name, count, more);
     layerListElement.append(row);
     if (openLayer === key) {
       const item = element("li", { class: "layer-options-item" });
@@ -356,6 +492,7 @@ function renderLayerList() {
     }
   }
   updateLayerCounts();
+  updateLayersSummary();
 }
 
 // ---- Presets ----
@@ -369,6 +506,7 @@ function matchingPreset() {
 layerPresetInput.addEventListener("change", () => {
   const test = PRESETS[layerPresetInput.value];
   if (!test) return;
+  soloLayers.clear(); // a preset says what is shown
   for (const key of layerState.order) layerState.options[key].on = test(layerInfo(key));
   layerChanged();
   loadLayers(shownMetadata());
@@ -418,6 +556,35 @@ layerAddButton.addEventListener("click", () => {
   }
 });
 layerSearchInput.addEventListener("input", renderAddList);
+
+// ---- Folding the whole list (chevron left of "Layers") ----
+const layersFoldButton = document.querySelector("#layers-fold");
+const layersBody = document.querySelector("#layers-body");
+const layersSummary = document.querySelector("#layers-summary");
+
+function setLayersFolded(folded) {
+  layersBody.hidden = folded;
+  layersSummary.hidden = !folded;
+  layersFoldButton.setAttribute("aria-expanded", String(!folded));
+  layersFoldButton.setAttribute("aria-label", folded ? "Unfold the layer list" : "Fold the layer list");
+  updateLayersSummary();
+}
+
+// "4 of 5 shown" (or "solo: 1 of 5") next to the folded heading
+function updateLayersSummary() {
+  const shown = layerState.order.filter((key) => (soloLayers.size ? soloLayers.has(key) : layerState.options[key]?.on));
+  layersSummary.textContent = `${soloLayers.size ? "solo: " : ""}${shown.length} of ${layerState.order.length} shown`;
+}
+
+layersFoldButton.addEventListener("click", () => {
+  const folded = !layersBody.hidden;
+  localStorage.setItem("layersFolded", String(folded));
+  setLayersFolded(folded);
+});
+{
+  const saved = localStorage.getItem("layersFolded");
+  setLayersFolded(saved === null ? window.matchMedia("(max-width: 900px)").matches : saved === "true");
+}
 
 // ---- Start, and follow the job on screen ----
 fetch("/api/catalogs")

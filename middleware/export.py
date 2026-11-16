@@ -1,16 +1,20 @@
 """
-Exported GIFs (written when the user saves a finding, see middleware.save).
+Exported GIFs (written when the user saves a finding, see middleware.save, and
+for "Download GIF", middleware.exportView).
 
 The GIFs the viewer shows are pixels only: the frontend draws the timestamp,
 the RA/Dec rulers and the selection box on top, so they stay sharp at any size.
-An exported GIF has to stand on its own, so here everything is burned in, at
-EXPORT_SCALE x the size for frames up to EXPORT_SCALE_MAX_PIXELS (every SPHEREx
-pixel becomes a 2x2 block, no blurring; at 1x the ruler text of a small frame
-was too small to read - a 6 looked like an 8). Bigger frames stay 1x: a
-1000 px frame at 2x would be 2000 x 2000 px per GIF frame.
+An exported GIF has to stand on its own, so here everything is burned in,
+enlarged to about EXPORT_TARGET_PX per frame (export_scale: a 250 px frame 4x,
+500 px 2x, 1000 px 1x; every SPHEREx pixel becomes a block, no blurring). At 1x
+the ruler text of a small frame was too small to read (a 6 looked like an 8), at
+2x the markers' shapes (star, triangle, ...) were hard to tell apart. Text,
+markers, lines and gaps grow with the scale (_detail), so a 4x GIF looks like
+the 2x one, with twice the pixels.
 
     white strip, RA ruler (black text)
-    Dec ruler | frame, with the green selection box
+    Dec ruler | frame, with the green selection box (and for "Download GIF" the
+              | star markers of the switched-on layers)
               | black strip, timestamp (white text)
 
 Coordinates: "frame pixels" are measured from the frame's top-left corner, one
@@ -20,7 +24,11 @@ The sky grid is the backend's own make_grid_wcs, so both always agree.
 Super Intelligence (SI) was used in creating this file.
 """
 
+import os
 import sys
+import threading
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from io import BytesIO
 from pathlib import Path
 
@@ -29,8 +37,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageSequence
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent / "python-backend"
 
-EXPORT_SCALE = 2
-EXPORT_SCALE_MAX_PIXELS = 500
+EXPORT_TARGET_PX = 1000  # about this wide per frame (without the rulers)
+EXPORT_MAX_SCALE = 4
 BOX_COLOUR = (0, 255, 0)
 # Ruler steps in degrees, chosen like the frontend's page rulers (viewer.js):
 # RULER_STEP_DEG (a 250 px frame: Dec 0.05, RA 0.05 or 0.1), coarser only where
@@ -41,6 +49,26 @@ RULER_STEPS_DEG = [0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
 RULER_STEP_DEG = 0.05
 RULER_MIN_TICKS = 3
 WHITE, BLACK = (255, 255, 255), (0, 0, 0)
+# Ruler spacing as on the page (viewer.js), for its 13 px labels: label - 3 px -
+# tick (6 px) - 4 px - image; "Dec" 6 px from the widest Dec label (its sign).
+# Scaled with the GIF's label size (_spacing), so a GIF looks like the page enlarged.
+PAGE_LABEL_PX = 13
+RULER_TICK_PX = 6
+RULER_LABEL_TICK_PX = 3
+RULER_IMAGE_GAP_PX = 4
+RULER_TITLE_GAP_PX = 6
+# The coordinate grid (star-overlay.js coordinateGrid sends it): thin white lines
+GRID_LINE = (255, 255, 255, 105)
+
+# Star markers ("Download GIF"): the viewer's layers, drawn like star-overlay.js
+# draws them - the layer's shape and colour on a dark edge, the size by
+# brightness. The page sends each star's position per frame.
+MARKER_SHAPES = ("circle", "square", "diamond", "triangle", "cross", "star", "plus", "hexagon")
+MARKER_KINDS = {"faint": 1, "normal": 1.5, "fast": 2.5}  # line width on screen (px)
+MARKER_PX = 6       # radius of a size-1 marker in output px (STAR_MARKER_PX in star-overlay.js)
+STAR_INNER = 0.45   # the star shape's inner corners (layers.js SHAPE_TRACERS)
+TRACK_COLOUR = (200, 200, 200)
+TRACK_MIN_PX = 6  # a shorter track (output px, at 2x detail) isn't drawn - it was a dot in the marker
 
 
 def _font(size, bold=False):
@@ -153,32 +181,164 @@ def ruler_ticks(ra, dec, pixels, scale=1, font=None):
             [(y + 0.5, _dec_label(v, ds)) for y, v in _ticks(left_dec, ds)])
 
 
+def export_scale(pixels):
+    '''How much a frame is enlarged: to about EXPORT_TARGET_PX, at most EXPORT_MAX_SCALE x'''
+    return max(1, min(EXPORT_MAX_SCALE, EXPORT_TARGET_PX // pixels))
+
+
+def _detail(scale):
+    '''How much text, markers and lines grow: 1 up to 2x (the sizes below are made for
+    that), 2 at 4x - so a bigger GIF looks the same, only sharper'''
+    return max(scale, 2) / 2
+
+
 def _fonts(pixels, scale):
     '''(label font, title font) for a frame drawn pixels * scale wide'''
-    size = max(12, min(22, round(scale * pixels / 28)))
+    size = max(12, min(round(22 * _detail(scale)), round(scale * pixels / 28)))
     return _font(size), _font(size + 3, bold=True)
 
 
-def _decorate(frame, ticks, fonts, pixels, label, box, scale):
+def _trace(draw, shape, c, r, width, colour):
+    '''A marker shape centred on (c, c), as layers.js traceShape draws it'''
+    if shape == "circle":
+        draw.ellipse([c - r, c - r, c + r, c + r], outline=colour, width=width)
+    elif shape == "square":
+        draw.rectangle([c - 0.9 * r, c - 0.9 * r, c + 0.9 * r, c + 0.9 * r], outline=colour, width=width)
+    elif shape in ("cross", "plus"):
+        if shape == "cross":
+            d = 0.8 * r
+            lines = [((c - d, c - d), (c + d, c + d)), ((c + d, c - d), (c - d, c + d))]
+        else:
+            lines = [((c - r, c), (c + r, c)), ((c, c - r), (c, c + r))]
+        for line in lines:
+            draw.line(line, fill=colour, width=width)
+    else:
+        if shape == "diamond":
+            d = 0.75 * np.sqrt(2) * r
+            points = [(c, c - d), (c + d, c), (c, c + d), (c - d, c)]
+        elif shape == "star":  # five points, the inner corners at STAR_INNER x r
+            points = [(c + (r if k % 2 == 0 else STAR_INNER * r) * np.sin(np.pi * k / 5),
+                       c - (r if k % 2 == 0 else STAR_INNER * r) * np.cos(np.pi * k / 5)) for k in range(10)]
+        elif shape == "hexagon":
+            points = [(c + r * np.cos(np.pi / 3 * k + np.pi / 6), c + r * np.sin(np.pi / 3 * k + np.pi / 6))
+                      for k in range(6)]
+        else:  # triangle
+            points = [(c, c - r), (c + 0.87 * r, c + 0.5 * r), (c - 0.87 * r, c + 0.5 * r)]
+        draw.line(points + points[:1], fill=colour, width=width, joint="curve")
+
+
+def _sprite(shape, colour, kind, r, k, cache):
+    '''A marker drawn once (dark edge, then its colour) on a transparent square:
+    (image, half its size). Stamping copies is much faster than drawing thousands.
+    k: _detail, the line widths grow with it.'''
+    key = (shape, colour, kind, r, k)
+    if key not in cache:
+        width = max(1, round(MARKER_KINDS[kind] * k))
+        edge = max(2, round(2 * k))
+        half = int(np.ceil(r * 1.1 + width + edge))
+        sprite = Image.new("RGBA", (2 * half + 1, 2 * half + 1), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(sprite)
+        _trace(draw, shape, half, r, width + edge, (0, 0, 0, 255))
+        _trace(draw, shape, half, r, width, colour + (255,))
+        cache[key] = (sprite, half)
+    return cache[key]
+
+
+def _draw_markers(big, layers, i, scale, cache, font):
+    '''The star markers of frame i on the scaled frame: fast movers' tracks
+    (dashed), the markers, then the names.'''
+    draw = ImageDraw.Draw(big)
+    draw.fontmode = "1"
+    k = _detail(scale)
+    names = []
+    for layer in layers:
+        for star in layer["stars"]:
+            if star["track"]:
+                points = [(x * scale, y * scale) for x, y in (p for p in star["xy"] if p)]
+                if len(points) < 2 or np.hypot(points[-1][0] - points[0][0], points[-1][1] - points[0][1]) < TRACK_MIN_PX * k:
+                    continue
+                for a, b in zip(points, points[1:]):  # dashes of 3 px every 6 px, like the page
+                    length = np.hypot(b[0] - a[0], b[1] - a[1])
+                    for t in np.arange(0, length, 6 * k):
+                        e = min(t + 3 * k, length)
+                        draw.line([(a[0] + (b[0] - a[0]) * t / length, a[1] + (b[1] - a[1]) * t / length),
+                                   (a[0] + (b[0] - a[0]) * e / length, a[1] + (b[1] - a[1]) * e / length)],
+                                  fill=TRACK_COLOUR, width=max(1, round(k)))
+    for layer in layers:
+        for star in layer["stars"]:
+            p = star["xy"][i]
+            if not p:
+                continue
+            r = round(max(MARKER_PX * k, 1.5 * scale) * star["size"] * 2) / 2
+            sprite, half = _sprite(layer["shape"], layer["colour"], star["kind"], r, k, cache)
+            x, y = round(p[0] * scale), round(p[1] * scale)
+            big.paste(sprite, (x - half, y - half), sprite)
+            if star["label"]:
+                names.append((x + r * 1.5, y - r * 1.2, star["label"]))
+    for x, y, text in names:
+        draw.text((x, y), text, font=font, fill=WHITE, anchor="ls", stroke_width=round(2 * k), stroke_fill=BLACK)
+
+
+def _draw_grid(big, grid, scale, font):
+    '''The coordinate grid on the scaled frame: lines of constant RA and Dec (thin,
+    half transparent), then their labels - one that would overlap another is left out.'''
+    layer = Image.new("RGBA", big.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    draw.fontmode = "1"
+    k = _detail(scale)
+    for line in grid["lines"]:
+        draw.line([(x * scale, y * scale) for x, y in line], fill=GRID_LINE, width=max(1, round(k)))
+    placed = []
+    for x, y, text in grid["labels"]:
+        at = (x * scale + 3 * k, y * scale - 3 * k)
+        box = draw.textbbox(at, text, font=font, anchor="ls", stroke_width=round(2 * k))
+        if any(box[0] < b[2] and b[0] < box[2] and box[1] < b[3] and b[1] < box[3] for b in placed):
+            continue
+        placed.append(box)
+        draw.text(at, text, font=font, fill=WHITE + (255,), anchor="ls",
+                  stroke_width=round(2 * k), stroke_fill=BLACK + (255,))
+    big.paste(Image.alpha_composite(big.convert("RGBA"), layer).convert("RGB"))
+
+
+def _spacing(font):
+    '''The page's ruler spacing scaled to this label font: (tick, label-tick, tick-image,
+    "Dec"-label) in px'''
+    f = font.size / PAGE_LABEL_PX
+    return tuple(max(1, round(v * f)) for v in (RULER_TICK_PX, RULER_LABEL_TICK_PX, RULER_IMAGE_GAP_PX,
+                                                 RULER_TITLE_GAP_PX))
+
+
+def _decorate(frame, ticks, fonts, pixels, label, box, scale, markers=None, grid=None):
     '''One frame (pixels x pixels, RGB) -> scale x bigger, rulers above and left
     (titles as in the frontend, outside the numbers and centred on the frame:
     "RA" on its own line above the RA labels, "Dec" upright along the left
     ruler's outer edge - so no tick label ever has to make room for them), the
-    box, the timestamp strip below.'''
+    box, the timestamp strip below. markers: (layers, frame index, sprite cache)
+    for the star markers, or None. grid: the coordinate grid (its steps go into
+    the strip, a second line under the timestamp), or None.'''
     big = frame.resize((pixels * scale, pixels * scale), Image.NEAREST)
     font, title_font = fonts
+    if markers:
+        _draw_markers(big, *markers[:2], scale, markers[2], font)
+    if grid:  # (in front of the markers, as on the page)
+        _draw_grid(big, grid, scale, _font(max(11, round(font.size * 0.72))))
     ascent, descent = font.getmetrics()
     title_height = sum(title_font.getmetrics())
     ra_ticks, dec_ticks = ticks
     measure = ImageDraw.Draw(big)
-    tick, pad = 3 * scale, 2 * scale
+    tick, label_tick, gap, title_gap = _spacing(font)
+    pad = 2 * scale  # (the outer margin)
     widest = max([measure.textlength(t, font=font) for _, t in dec_ticks] + [0])
-    dx = pad + title_height + 2 * pad + int(np.ceil(widest)) + pad + tick
-    dy = pad + title_height + ascent + descent + tick
+    # the upright "Dec" (letters ending at its baseline, title_ascent from the left)
+    # title_gap left of the widest label
+    title_ascent = title_font.getmetrics()[0]
+    dx = pad + title_ascent + title_gap + int(np.ceil(widest)) + label_tick + tick + gap
+    dy = pad + title_height + ascent + descent + tick + gap
     baseline = pad + title_height + ascent  # of the RA labels (the "RA" title is the line above)
-    text_right = dx - tick - pad            # right edge of the Dec labels
+    text_right = dx - gap - tick - label_tick  # right edge of the Dec labels
     w = h = pixels * scale
-    out = Image.new("RGB", (dx + w, dy + h + ascent + descent + 2 * pad), WHITE)
+    strip_lines = 2 if grid else 1
+    out = Image.new("RGB", (dx + w, dy + h + strip_lines * (ascent + descent) + (strip_lines + 1) * pad), WHITE)
     out.paste(big, (dx, dy))
     draw = ImageDraw.Draw(out)
     # No anti-aliasing: soft grey letter edges get mapped to the nearest colours
@@ -187,6 +347,8 @@ def _decorate(frame, ticks, fonts, pixels, label, box, scale):
     draw.fontmode = "1"
     draw.rectangle([0, dy + h, dx + w, out.height], fill=BLACK)
     draw.text((dx + pad, dy + h + pad), label, font=font, fill=WHITE, anchor="la")
+    if grid:
+        draw.text((dx + pad, dy + h + 2 * pad + ascent + descent), grid["text"], font=font, fill=WHITE, anchor="la")
     draw.text((dx + w // 2, pad), "RA", font=title_font, fill=BLACK, anchor="mt")  # centred on the frame
     # "Dec" upright (reading upwards), centred on the frame's height
     title = Image.new("L", (int(np.ceil(draw.textlength("Dec", font=title_font))), title_height), 0)
@@ -198,12 +360,12 @@ def _decorate(frame, ticks, fonts, pixels, label, box, scale):
     half_height = (ascent + descent) / 2
     for x, text in ra_ticks:
         xs = dx + x * scale
-        draw.line([(xs, dy - tick), (xs, dy - 1)], fill=BLACK, width=max(1, scale // 2))
+        draw.line([(xs, dy - gap - tick), (xs, dy - gap - 1)], fill=BLACK, width=max(1, scale // 2))
         half = draw.textlength(text, font=font) / 2
         draw.text((min(max(xs, dx + half), dx + w - half), baseline), text, font=font, fill=BLACK, anchor="ms")
     for y, text in dec_ticks:  # every tick gets its label (kept inside the frame's height)
         ys = dy + y * scale
-        draw.line([(dx - tick, ys), (dx - 1, ys)], fill=BLACK, width=max(1, scale // 2))
+        draw.line([(dx - gap - tick, ys), (dx - gap - 1, ys)], fill=BLACK, width=max(1, scale // 2))
         draw.text((text_right, min(max(ys, dy + half_height), dy + h - half_height)), text,
                   font=font, fill=BLACK, anchor="rm")
     if box:
@@ -213,7 +375,61 @@ def _decorate(frame, ticks, fonts, pixels, label, box, scale):
     return out
 
 
-def export_gif(gif_bytes, ra, dec, pixels, labels, box=None, scale=None):
+def _to_palette(frame, fixed):
+    '''An RGB frame -> a 256-colour frame whose palette holds the fixed colours
+    exactly (text, box, the layers' marker colours). A palette made from the
+    frame alone is mostly sky: a few thin marker lines got the nearest sky colour
+    (orange came out pink, violet grey).'''
+    fixed = list(dict.fromkeys(fixed))[:64]
+    adaptive = frame.quantize(colors=256 - len(fixed), method=Image.Quantize.MEDIANCUT)
+    palette = adaptive.getpalette()[:3 * (256 - len(fixed))]
+    palette += [v for colour in fixed for v in colour]
+    target = Image.new("P", (1, 1))
+    target.putpalette(palette + [0] * (768 - len(palette)))
+    return frame.quantize(palette=target, dither=Image.Dither.NONE)
+
+
+# The frames of an export are drawn in worker processes, a share each (_render_frames):
+# one export ~4x faster on 8 cores, and several exports at once really run at once
+# (threads in the server can't: Python runs one at a time). Started with the server
+# (warm_up), so the first export doesn't wait for them.
+EXPORT_WORKERS = max(1, (os.cpu_count() or 2) - 1)  # (one core stays for the server)
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def _workers():
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = ProcessPoolExecutor(EXPORT_WORKERS)
+        return _pool
+
+
+def _load_fonts(_):
+    _fonts(250, 4)
+
+
+def warm_up():
+    '''Start the worker processes and let them load their libraries and fonts.'''
+    list(_workers().map(_load_fonts, range(EXPORT_WORKERS)))
+
+
+def _render_frames(job):
+    '''In a worker: a share of an export's frames -> [(frame index, palette image)].'''
+    pixels, scale = job["pixels"], job["scale"]
+    fonts = _fonts(pixels, scale)
+    sprites = {}
+    out = []
+    for i, rgb, label in job["frames"]:
+        frame = Image.frombytes("RGB", (pixels, pixels), rgb)
+        markers = (job["layers"], i, sprites) if job["layers"] else None
+        out.append((i, _to_palette(_decorate(frame, job["ticks"], fonts, pixels, label, job["box"], scale,
+                                             markers, job["grid"]), job["fixed"])))
+    return out
+
+
+def export_gif(gif_bytes, ra, dec, pixels, labels, box=None, scale=None, layers=None, grid=None):
     '''
     The viewer's GIF -> the exported GIF (bytes), see the module docstring.
 
@@ -222,20 +438,32 @@ def export_gif(gif_bytes, ra, dec, pixels, labels, box=None, scale=None):
     ra, dec, pixels: the job's field centre and frame size
     labels: text per frame for the strip below it, e.g. "2025-06-07 12:53 UTC"
     box: (x1, y1, x2, y2) corners in frame pixels (top left, bottom right), or None
-    scale: None = EXPORT_SCALE up to EXPORT_SCALE_MAX_PIXELS, 1 above
+    scale: None = export_scale(pixels) (about EXPORT_TARGET_PX per frame)
+    layers: star markers to draw, bottom layer first, or None:
+        [{shape, colour: (r, g, b), stars: [{size, kind, xy: per frame [x, y] | None,
+          label, track}]}] (positions in frame pixels, see middleware.validateExport)
+    grid: the coordinate grid shown on the page, or None:
+        {lines: [[(x, y), ...]], labels: [(x, y, text)], text: "Grid: Dec every ..."}
     '''
     if scale is None:
-        scale = EXPORT_SCALE if pixels <= EXPORT_SCALE_MAX_PIXELS else 1
+        scale = export_scale(pixels)
     fonts = _fonts(pixels, scale)
     ticks = ruler_ticks(ra, dec, pixels, scale, fonts[0])
     src = Image.open(BytesIO(gif_bytes))
-    frames, durations = [], []
+    fixed = [WHITE, BLACK, BOX_COLOUR, TRACK_COLOUR] + [layer["colour"] for layer in layers or []]
+    todo, durations = [], []
     for i, f in enumerate(ImageSequence.Iterator(src)):
         # (GIFs from before the frontend drew the timestamps have a strip below the frame)
-        frame = f.convert("RGB").crop((0, 0, pixels, pixels))
-        label = labels[i] if i < len(labels) else ""
-        frames.append(_decorate(frame, ticks, fonts, pixels, label, box, scale))
+        todo.append((i, f.convert("RGB").crop((0, 0, pixels, pixels)).tobytes(), labels[i] if i < len(labels) else ""))
         durations.append(f.info.get("duration", 250))
+    share = -(-len(todo) // EXPORT_WORKERS)  # frames per worker (rounded up)
+    jobs = [{"frames": todo[k:k + share], "pixels": pixels, "scale": scale, "ticks": ticks, "box": box,
+             "layers": layers, "grid": grid, "fixed": fixed} for k in range(0, len(todo), share)]
+    try:
+        done = [frame for part in _workers().map(_render_frames, jobs) for frame in part]
+    except (BrokenProcessPool, OSError):  # the workers are gone: draw them here, as before
+        done = [frame for job in jobs for frame in _render_frames(job)]
+    frames = [image for _, image in sorted(done, key=lambda d: d[0])]
     out = BytesIO()
     frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:],
                    duration=durations, loop=0)

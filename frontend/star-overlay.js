@@ -1,8 +1,8 @@
 // Star overlays: the layers switched on in the layer list (layers.js) drawn over
-// the GIF - the job's own (meta.json "overlays": every Gaia DR3 and CatWISE2020
-// source in the frame and SIMBAD's fast movers, python-backend/overlays.py) and
-// the extra ones fetched on demand (python-backend/catalogs.py). Each layer has its
-// shape and colour; its options (layers.js) pick which of its stars are drawn.
+// the GIF - all fetched on demand for the job on screen (POST /api/catalog,
+// python-backend/catalogs.py; the built-in Gaia DR3, CatWISE2020 and SIMBAD fast
+// movers come from python-backend/overlays.py). Each layer has its shape and
+// colour; its options (layers.js) pick which of its stars are drawn.
 //
 // prepareCatalog moves every star to each frame's date (proper motion; or takes
 // its position per frame, "positions", e.g. the known asteroids) and turns that
@@ -17,9 +17,15 @@
 //
 // The zoom (app.js openZoom) gets the same markers at its own scale, on the same frame.
 //
+// The markers are drawn on a <canvas>, not as SVG elements: with every catalogue
+// on there are 10,000+ of them, and as SVG (5 elements each, a CSS drop-shadow on
+// every marker) each frame change took ~0.5 s. On the canvas each marker is a
+// copy of a small pre-drawn image (markerSprite). Hover and click find the star under
+// the mouse by distance (starAt), the hover box replaces the SVG <title>.
+//
 // Uses app.js's top-level variables (classic scripts): image, currentFrameIndex,
-// loadGifFrames, currentVideoUuid, zoomDialog; and layers.js's visibleLayers,
-// anyLayerOn, layersVersion, shapeElement.
+// loadGifFrames, currentVideoUuid, zoomDialog, zoomView, zoomRegion; viewer.js's
+// activeTool; and layers.js's visibleLayers, anyLayerOn, layersVersion, traceShape.
 
 const starOverlay = document.querySelector("#star-overlay");
 const starInfo = document.querySelector("#star-info");
@@ -33,6 +39,7 @@ const STAR_LABEL_PX = 11;  // font size of the fast movers' names on screen
 // Fast movers always full size.
 const STAR_SIZE_FULL_RANK = 20;
 const STAR_SIZE_FAINTEST = 0.4;
+const STAR_SHAPE_MIN_SIZE = 0.7; // the star shape (★) smaller than this is a blob
 
 // Per star of a layer: its marker size (0..1, see STAR_SIZE_FULL_RANK; "same": all 1)
 function markerSizes(catalog, stars, mode = "brightness") {
@@ -50,9 +57,7 @@ function markerSizes(catalog, stars, mode = "brightness") {
   }));
 }
 
-let starMarkers = [];     // { star, marker, label, average } of the stars drawn now
-let starOverlayKey = "";  // what the drawn overlay was built for (rebuilt when it changes)
-let drawnFrame;           // frame index the markers are placed for (null = average)
+let starOverlayKey = "";  // what the page's markers were collected for (again when it changes)
 
 // localStorage.videoMetadata parsed once per job (it is ~130 kB, and this is
 // asked every animation frame); app.js stores it before switching to a new job.
@@ -74,7 +79,7 @@ function shownMetadata() {
   }
   const metadata = parsedMetadata;
   const src = image.currentSrc || image.src;
-  if (!metadata?.overlays || !metadata.uuid || metadata.uuid !== currentVideoUuid) return null;
+  if (!metadata?.frames || !metadata.uuid || metadata.uuid !== currentVideoUuid) return null;
   if (!src.includes(metadata.uuid) || !image.naturalWidth) return null;
   if (image.naturalWidth !== metadata.pixels) return null; // not the size the positions are for
   return metadata;
@@ -135,8 +140,172 @@ function skyToFrame(ra, dec, metadata) {
   return [n / 2 - xi / s, n / 2 - eta / s];
 }
 
+// ---- The coordinate grid: lines of constant RA and Dec over the frame ----
+// Settings "Coordinate grid": "poles" (default: where the edge rulers don't tell
+// the whole story - the pole in the frame, or the RA across the frame spanning more
+// than GRID_POLES_RA_SPAN_DEG, so RA lines visibly tilt and Dec lines bend),
+// "always", "off". In GIF pixels, like the stars' "xy": drawn by drawStarView (the
+// page and the zoom), sent along with "Download GIF" and Save (middleware/export.py).
+// Its values are written on the lines only with the pole in the frame, or with the
+// switch "Grid labels away from the pole" (localStorage "gridLabels").
+const GRID_POLES_RA_SPAN_DEG = 2;
+const GRID_MAX_LINES = { dec: 10, ra: 9 }; // at most this many lines each way (steps as the rulers')
+const GRID_LINE_POINTS = 400;
+const GRID_LABEL_PX = 11;
+let gridMode = localStorage.getItem("grid") ?? "poles";
+let gridLabelsAway = localStorage.getItem("gridLabels") === "true";
+let gridCache = { key: "", grid: null };
+const gridModeInput = document.querySelector("#grid-mode");
+gridModeInput.value = gridMode;
+gridModeInput.addEventListener("change", () => {
+  gridMode = gridModeInput.value;
+  localStorage.setItem("grid", gridMode);
+  buildStarOverlay(); // (its key includes the mode; the zoom gets it when opened next)
+});
+const gridLabelsButton = document.querySelector("#grid-labels");
+gridLabelsButton.setAttribute("aria-checked", String(gridLabelsAway));
+gridLabelsButton.addEventListener("click", () => {
+  gridLabelsAway = !gridLabelsAway;
+  gridLabelsButton.setAttribute("aria-checked", String(gridLabelsAway));
+  if (gridLabelsAway) localStorage.setItem("gridLabels", "true");
+  else localStorage.removeItem("gridLabels");
+  buildStarOverlay();
+});
+
+// {lines: [[[x, y], ...]], labels: [[x, y, text]], dec_step, ra_step} or null (no grid)
+function coordinateGrid(metadata) {
+  if (!metadata || gridMode === "off") return null;
+  const key = `${metadata.uuid}|${gridMode}|${gridLabelsAway}`;
+  if (gridCache.key !== key) gridCache = { key, grid: buildGrid(metadata) };
+  return gridCache.grid;
+}
+
+function buildGrid(metadata) {
+  const n = metadata.pixels;
+  const ra0 = metadata.ra;
+  const samples = [];
+  for (let i = 0; i <= 30; i++) {
+    for (let j = 0; j <= 30; j++) samples.push(frameToSky((i / 30) * n, (j / 30) * n, metadata)); // (viewer.js)
+  }
+  const poleDec = metadata.dec >= 0 ? 90 : -90;
+  const pole = skyToFrame(0, poleDec, metadata);
+  const poleInside = Boolean(pole) && pole[0] >= 0 && pole[0] <= n && pole[1] >= 0 && pole[1] <= n;
+  let decMin = Math.min(...samples.map((s) => s[1]));
+  let decMax = Math.max(...samples.map((s) => s[1]));
+  if (poleInside && poleDec > 0) decMax = 90;
+  if (poleInside && poleDec < 0) decMin = -90;
+  const raRel = samples.map((s) => ((s[0] - ra0 + 540) % 360) - 180); // around the centre: no jump at 0/360
+  const raMin = Math.min(...raRel);
+  const raMax = Math.max(...raRel);
+  const raSpan = poleInside ? 360 : raMax - raMin;
+  if (gridMode === "poles" && !poleInside && raSpan <= GRID_POLES_RA_SPAN_DEG) return null;
+
+  // the rulers' steps (viewer.js RULER_STEPS_DEG): coarser while too many lines, finer while < 3
+  const step = (span, first, most) => {
+    let i = first;
+    while (i < RULER_STEPS_DEG.length - 1 && span / RULER_STEPS_DEG[i] > most) i++;
+    while (i > 0 && span / RULER_STEPS_DEG[i] < 3) i--;
+    return RULER_STEPS_DEG[i];
+  };
+  const decStep = step(decMax - decMin, RULER_STEPS_DEG.indexOf(PAGE_RULER_STEP_DEG), GRID_MAX_LINES.dec);
+  const raStep = step(raSpan, 0, GRID_MAX_LINES.ra);
+  const lines = [];
+  const labels = [];
+  const round = (v) => Math.round(v * 100) / 100;
+  const near = (p) => p && p[0] >= -1 && p[0] <= n + 1 && p[1] >= -1 && p[1] <= n + 1;
+  // a line's parts inside the frame -> lines; its points (null = outside) for the label
+  const addLine = (points) => {
+    let part = [];
+    for (const p of points) {
+      if (near(p)) part.push([round(p[0]), round(p[1])]);
+      else {
+        if (part.length > 1) lines.push(part);
+        part = [];
+      }
+    }
+    if (part.length > 1) lines.push(part);
+  };
+  // labels keep off the edges (the right one leaves room for the text)
+  const labelArea = (p) => p && p[0] > 0.02 * n && p[0] < 0.88 * n && p[1] > 0.05 * n && p[1] < 0.97 * n;
+
+  // constant Dec (around the pole: circles), labelled down and to the right of the
+  // pole between two RA lines, else near the right edge
+  const raFrom = poleInside ? 0 : ra0 + raMin - 0.1 * raSpan;
+  const raTo = poleInside ? 360 : ra0 + raMax + 0.1 * raSpan;
+  const decDigits = decimalsOf(decStep); // (viewer.js)
+  for (let k = Math.ceil(decMin / decStep); k * decStep < decMax - 1e-9; k++) {
+    const dec = k * decStep;
+    if (Math.abs(dec) >= 90) continue;
+    const points = Array.from({ length: GRID_LINE_POINTS + 1 },
+      (_, i) => skyToFrame(raFrom + ((raTo - raFrom) * i) / GRID_LINE_POINTS, dec, metadata));
+    addLine(points);
+    let best = null;
+    let bestScore = Infinity;
+    for (const p of points) {
+      if (!labelArea(p)) continue;
+      const score = poleInside
+        ? Math.abs(((((Math.atan2(p[0] - pole[0], p[1] - pole[1]) * 180) / Math.PI - 22.5) % 360) + 540) % 360 - 180)
+        : Math.abs(p[0] - 0.86 * n);
+      if (score < bestScore) [best, bestScore] = [p, score];
+    }
+    if (best) labels.push([round(best[0]), round(best[1]), `${dec >= 0 ? "+" : "−"}${Math.abs(dec).toFixed(decDigits)}°`]);
+  }
+
+  // constant RA (around the pole: spokes), labelled where they come in from the edge
+  const raDigits = decimalsOf(raStep);
+  const raValues = [];
+  if (poleInside) for (let a = 0; a < 360 - 1e-9; a += raStep) raValues.push(a);
+  else for (let k = Math.ceil((ra0 + raMin) / raStep); k * raStep < ra0 + raMax; k++) raValues.push(k * raStep);
+  const decRange = decMax - decMin;
+  const decFrom = poleDec > 0 ? Math.max(-90, decMin - 0.1 * decRange) : (poleInside ? -89.99999 : decMin - 0.1 * decRange);
+  const decTo = poleDec > 0 ? (poleInside ? 89.99999 : Math.min(90, decMax + 0.1 * decRange)) : Math.min(90, decMax + 0.1 * decRange);
+  for (const value of raValues) {
+    const ra = ((value % 360) + 360) % 360;
+    const points = Array.from({ length: GRID_LINE_POINTS + 1 },
+      (_, i) => skyToFrame(ra, decFrom + ((decTo - decFrom) * i) / GRID_LINE_POINTS, metadata));
+    addLine(points);
+    // its far end from the pole: the low |Dec| end of the list (north) or the high end (south)
+    const order = poleDec > 0 ? points : [...points].reverse();
+    const first = order.find(labelArea);
+    if (first) labels.push([round(first[0]), round(first[1]), `${ra.toFixed(raDigits)}°`]);
+  }
+  return { lines, labels: poleInside || gridLabelsAway ? labels : [], dec_step: decStep, ra_step: raStep };
+}
+
+// Lines, then labels (one that would overlap another or leave the canvas is left out);
+// drawn last, in front of the markers
+function drawGrid(context, view) {
+  const { grid, scale, offsetX, offsetY } = view;
+  context.beginPath();
+  for (const line of grid.lines) {
+    line.forEach(([x, y], i) => {
+      if (i === 0) context.moveTo(x * scale + offsetX, y * scale + offsetY);
+      else context.lineTo(x * scale + offsetX, y * scale + offsetY);
+    });
+  }
+  context.lineWidth = 1;
+  context.strokeStyle = "rgba(255, 255, 255, 0.4)";
+  context.stroke();
+  context.font = `${GRID_LABEL_PX}px "DM Sans", sans-serif`;
+  context.lineWidth = 3;
+  context.strokeStyle = "#000";
+  context.fillStyle = "white";
+  const placed = [];
+  for (const [x, y, text] of grid.labels) {
+    const left = x * scale + offsetX + 3;
+    const baseline = y * scale + offsetY - 3;
+    const box = [left - 2, baseline - GRID_LABEL_PX, left + context.measureText(text).width + 2, baseline + 3];
+    if (box[0] < 0 || box[1] < 0 || box[2] > view.width || box[3] > view.height) continue;
+    if (placed.some((b) => box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3])) continue;
+    placed.push(box);
+    context.strokeText(text, left, baseline);
+    context.fillText(text, left, baseline);
+  }
+}
+
 // Every star's position per frame ("xy") and its SIMBAD / VizieR links, once per
 // job (the backend sends neither: for thousands of stars that would be megabytes).
+// (Only results from before the layers were fetched on demand have "overlays".)
 function prepareOverlays(metadata) {
   if (!metadata?.overlays || !metadata.frames) return;
   for (const catalog of Object.values(metadata.overlays)) {
@@ -189,7 +358,7 @@ function updateStarInfoFrame() {
   if (!selectedStar || starInfo.hidden) return;
   const { star, catalog, cells } = selectedStar;
   const metadata = shownMetadata();
-  const frame = drawnFrame;
+  const frame = pageStars.frame;
   if (!metadata || frame === null || frame === undefined) {
     cells.date.textContent = "– (frame not known yet; stop the GIF for exact values)";
     for (const key of ["pixel", "sky", "moved"]) cells[key].textContent = "–";
@@ -283,158 +452,391 @@ function showStarInfo(star, catalog) {
   updateStarInfoFrame();
 }
 
-// Rebuild the SVG: called when the GIF, the switches or the displayed size change.
+// ---- Drawing: a "view" is one canvas with its markers (the page's or the zoom's) ----
+// Line widths on screen, per kind of marker (as the SVG version's CSS had them)
+const STAR_KINDS = [ // drawn in this order: faint ones at the bottom
+  { kind: "faint", lineWidth: 1, alpha: 0.75 },
+  { kind: "normal", lineWidth: 1.5, alpha: 1 },
+  { kind: "fast", lineWidth: 2.5, alpha: 1 },
+];
+const STAR_OUTLINE = "rgba(0, 0, 0, 0.65)"; // dark edge under each line, so it shows on bright stars
+const STAR_TRACK = "rgba(255, 255, 255, 0.75)";
+// A track shorter than this on screen isn't drawn: a fast mover that moves only a
+// fraction of a pixel over the frames showed it as a white dot inside its marker
+const TRACK_MIN_PX = 6;
+const STAR_HOVER = "white";
+// Markers bigger than this (radius, screen px) are stroked directly instead of copied
+// from a pre-drawn image: in a zoom onto a few pixels markers get hundreds of px big,
+// and an image per size made a 2 px zoom take over a second to open
+const SPRITE_MAX_RADIUS_PX = 48;
+
+function createStarView(canvas, onPick) {
+  return {
+    canvas, onPick,
+    layers: [],      // [{ style, kinds: { faint: [], normal: [], fast: [] } }], bottom first
+    markers: [],     // all of them, in drawing order (last = on top)
+    scale: 1,        // screen px per GIF px
+    offsetX: 0,      // screen position of GIF pixel (0, 0)
+    offsetY: 0,
+    width: 0,        // canvas size on screen (CSS px)
+    height: 0,
+    frame: undefined, // frame index drawn (null = average positions)
+    grid: null,      // the coordinate grid (coordinateGrid), or null
+    hovered: null,   // the marker under the mouse
+    pointer: null,   // last mouse position over it { x, y } (client px), to re-check hover per frame
+    dirty: false,    // redraw on the next animation frame
+  };
+}
+
+// The markers of the switched-on layers: { star, catalog, style, size, kind, average, track, label }.
+// Positions stay in GIF pixels - the view's scale and offset put them on its canvas.
+function setStarViewMarkers(view, metadata) {
+  view.layers = [];
+  view.markers = [];
+  view.hovered = null;
+  view.dirty = true;
+  if (!metadata || !anyLayerOn()) return;
+  for (const { catalog, stars, options, style } of visibleLayers(metadata)) { // (layers.js)
+    const layer = { style, kinds: { faint: [], normal: [], fast: [] } };
+    const sizes = markerSizes(catalog, stars, options.size);
+    // brightest drawn last = on top (and found first by starAt)
+    for (const star of [...stars].reverse()) {
+      const points = star.xy.filter(Boolean);
+      if (!points.length) continue;
+      const fast = star.reason.includes("fast");
+      const size = style.shape === "star" ? Math.max(sizes.get(star), STAR_SHAPE_MIN_SIZE) : sizes.get(star);
+      const marker = {
+        star, catalog, style, size,
+        kind: fast ? "fast" : size < 0.75 ? "faint" : "normal",
+        average: [
+          points.reduce((sum, p) => sum + p[0], 0) / points.length,
+          points.reduce((sum, p) => sum + p[1], 0) / points.length,
+        ],
+        track: fast && points.length > 1 ? points : null,
+        label: star.name && (options.labels === "named" || (options.labels === "fast" && fast)) ? star.name : null,
+      };
+      layer.kinds[marker.kind].push(marker);
+    }
+    view.layers.push(layer);
+  }
+  // drawing order for hit testing: per layer faint, normal, fast (as drawStarView)
+  for (const layer of view.layers) {
+    for (const { kind } of STAR_KINDS) view.markers.push(...layer.kinds[kind]);
+  }
+}
+
+// Marker radius on screen for size 1; a marker always surrounds at least a 3 px star
+function markerRadius(view) {
+  return Math.max(STAR_MARKER_PX, 1.5 * view.scale);
+}
+
+// [x, y] on the view's canvas on its frame, or null (outside the image then)
+function markerOnScreen(view, marker) {
+  const p = view.frame === null || view.frame === undefined ? marker.average : marker.star.xy[view.frame];
+  return p ? [p[0] * view.scale + view.offsetX, p[1] * view.scale + view.offsetY] : null;
+}
+
+// A marker drawn once (dark edge, then the layer's colour), centred in a small
+// canvas: { canvas, size, half } in CSS px. Radii are rounded to 1/4 px, so a
+// layer needs a few dozen of them at most.
+const markerSprites = new Map();
+
+function markerSprite(style, { kind, lineWidth, alpha }, radius, ratio) {
+  const r = Math.round(radius * 4) / 4;
+  const key = `${style.shape}|${style.color}|${kind}|${r}|${ratio}`;
+  let sprite = markerSprites.get(key);
+  if (sprite) return sprite;
+  if (markerSprites.size > 4000) markerSprites.clear(); // (many sizes over time: start again)
+  const half = Math.ceil(r * 1.1 + lineWidth + 2); // the diamond reaches 1.06 r
+  const size = 2 * half;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = Math.ceil(size * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.lineJoin = "round";
+  context.globalAlpha = alpha;
+  const path = new Path2D();
+  traceShape(path, style.shape, half, half, r); // (layers.js)
+  context.lineWidth = lineWidth + 2;
+  context.strokeStyle = STAR_OUTLINE;
+  context.stroke(path);
+  context.lineWidth = lineWidth;
+  context.strokeStyle = style.color;
+  context.stroke(path);
+  sprite = { canvas, size, half };
+  markerSprites.set(key, sprite);
+  return sprite;
+}
+
+function drawStarView(view) {
+  view.dirty = false;
+  const { canvas } = view;
+  const ratio = window.devicePixelRatio || 1;
+  const pixelWidth = Math.max(1, Math.round(view.width * ratio));
+  const pixelHeight = Math.max(1, Math.round(view.height * ratio));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, view.width, view.height);
+  context.lineJoin = "round";
+  const base = markerRadius(view);
+
+  // the fast movers' whole tracks, dashed, under the markers
+  context.beginPath();
+  for (const marker of view.markers) {
+    if (!marker.track) continue;
+    const [first, last] = [marker.track[0], marker.track[marker.track.length - 1]];
+    if (Math.hypot(last[0] - first[0], last[1] - first[1]) * view.scale < TRACK_MIN_PX) continue;
+    marker.track.forEach(([x, y], i) => {
+      const sx = x * view.scale + view.offsetX;
+      const sy = y * view.scale + view.offsetY;
+      if (i === 0) context.moveTo(sx, sy); else context.lineTo(sx, sy);
+    });
+  }
+  context.setLineDash([3, 3]);
+  context.lineWidth = 1;
+  context.strokeStyle = STAR_TRACK;
+  context.stroke();
+  context.setLineDash([]);
+
+  // the markers: copies of a small pre-drawn image per shape, colour, kind and size
+  // (stroking 10,000 shapes per frame took ~150 ms; copying them a few ms). Only
+  // the ones on the canvas (in a zoom most are outside); very big ones stroked directly.
+  const snap = (value) => Math.round(value * ratio) / ratio; // whole device pixels: sharp copies
+  for (const layer of view.layers) {
+    for (const kindStyle of STAR_KINDS) {
+      const big = new Path2D();
+      let anyBig = false;
+      for (const marker of layer.kinds[kindStyle.kind]) {
+        const at = markerOnScreen(view, marker);
+        if (!at) continue;
+        const r = base * marker.size;
+        const reach = r * 1.1 + kindStyle.lineWidth + 2;
+        if (at[0] < -reach || at[1] < -reach || at[0] > view.width + reach || at[1] > view.height + reach) continue;
+        if (r > SPRITE_MAX_RADIUS_PX) {
+          traceShape(big, layer.style.shape, at[0], at[1], r); // (layers.js)
+          anyBig = true;
+          continue;
+        }
+        const sprite = markerSprite(layer.style, kindStyle, r, ratio);
+        context.drawImage(sprite.canvas, snap(at[0]) - sprite.half, snap(at[1]) - sprite.half, sprite.size, sprite.size);
+      }
+      if (anyBig) { // (like markerSprite draws them)
+        context.globalAlpha = kindStyle.alpha;
+        context.lineWidth = kindStyle.lineWidth + 2;
+        context.strokeStyle = STAR_OUTLINE;
+        context.stroke(big);
+        context.lineWidth = kindStyle.lineWidth;
+        context.strokeStyle = layer.style.color;
+        context.stroke(big);
+        context.globalAlpha = 1;
+      }
+    }
+  }
+
+  const hovered = view.hovered && markerOnScreen(view, view.hovered);
+  if (hovered) {
+    const path = new Path2D();
+    traceShape(path, view.hovered.style.shape, hovered[0], hovered[1], base * view.hovered.size);
+    context.lineWidth = 4.5;
+    context.strokeStyle = STAR_OUTLINE;
+    context.stroke(path);
+    context.lineWidth = 2.5;
+    context.strokeStyle = STAR_HOVER;
+    context.stroke(path);
+  }
+
+  // names, right above the marker (left of it where they would leave the canvas)
+  context.font = `${STAR_LABEL_PX}px "DM Sans", sans-serif`;
+  context.textBaseline = "alphabetic";
+  context.lineWidth = 3;
+  context.strokeStyle = "#000";
+  context.fillStyle = "white";
+  for (const marker of view.markers) {
+    if (!marker.label) continue;
+    const at = markerOnScreen(view, marker);
+    if (!at) continue;
+    const r = base * marker.size;
+    const textWidth = context.measureText(marker.label).width;
+    let x = at[0] + r * 1.5;
+    if (x + textWidth > view.width) x = at[0] - r * 1.5 - textWidth;
+    const y = at[1] - r * 1.2;
+    context.strokeText(marker.label, x, y);
+    context.fillText(marker.label, x, y);
+  }
+
+  if (view.grid) drawGrid(context, view); // (in front of the markers and names)
+}
+
+// The marker under a mouse position (client px): the nearest within its hit
+// radius (a bit bigger than the marker), the top one if they are equally near
+function starAt(view, clientX, clientY) {
+  if (!view.markers.length || view.canvas.hidden) return null;
+  const rect = view.canvas.getBoundingClientRect();
+  const x = clientX - rect.left;
+  const y = clientY - rect.top;
+  const base = markerRadius(view);
+  let best = null;
+  let bestDistance = Infinity;
+  for (const marker of view.markers) {
+    const at = markerOnScreen(view, marker);
+    if (!at) continue;
+    const distance = Math.hypot(at[0] - x, at[1] - y);
+    if (distance <= Math.max(base * marker.size * 1.6, base * 0.8) && distance <= bestDistance) {
+      best = marker;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+// ---- Hover box (replaces the SVG markers' <title>) ----
+const starTooltip = document.createElement("div");
+starTooltip.className = "star-tooltip";
+starTooltip.setAttribute("role", "tooltip");
+starTooltip.hidden = true;
+document.body.append(starTooltip);
+
+function setHovered(view, marker, clientX, clientY) {
+  if (marker !== view.hovered) {
+    view.hovered = marker;
+    view.dirty = true;
+  }
+  view.canvas.parentElement.classList.toggle("over-star", Boolean(marker));
+  if (!marker) {
+    starTooltip.hidden = true;
+    return;
+  }
+  // in the zoom the box must be inside the dialog (the top layer covers the page)
+  const host = zoomDialog.open ? zoomDialog : document.body;
+  if (starTooltip.parentElement !== host) host.append(starTooltip);
+  starTooltip.textContent = starTitle(marker.star, marker.catalog.label);
+  starTooltip.hidden = false;
+  const left = Math.min(clientX + 14, window.innerWidth - starTooltip.offsetWidth - 8);
+  const top = clientY + 18 + starTooltip.offsetHeight > window.innerHeight
+    ? clientY - 10 - starTooltip.offsetHeight : clientY + 18;
+  starTooltip.style.left = `${Math.max(8, left)}px`;
+  starTooltip.style.top = `${Math.max(8, top)}px`;
+}
+
+// A press that moves less than this (both ways) is a click, not a drag (app.js uses it too)
+const STAR_CLICK_MOVE_PX = 6;
+
+// Mouse handling for a view: canPick() says whether stars take the mouse now.
+// The canvas itself lets the mouse through (pointer-events: none), so a press
+// still reaches the image below (zoom / box selection); its parent listens.
+function listenForStars(view, canPick) {
+  const area = view.canvas.parentElement;
+  let pressedAt = null;
+  area.addEventListener("pointerdown", (event) => { pressedAt = { x: event.clientX, y: event.clientY }; });
+  area.addEventListener("pointermove", (event) => {
+    view.pointer = canPick() ? { x: event.clientX, y: event.clientY } : null;
+    setHovered(view, view.pointer ? starAt(view, event.clientX, event.clientY) : null, event.clientX, event.clientY);
+  });
+  area.addEventListener("pointerleave", () => {
+    view.pointer = null;
+    setHovered(view, null);
+  });
+  area.addEventListener("click", (event) => {
+    if (!canPick()) return;
+    if (pressedAt && (Math.abs(event.clientX - pressedAt.x) >= STAR_CLICK_MOVE_PX ||
+      Math.abs(event.clientY - pressedAt.y) >= STAR_CLICK_MOVE_PX)) return; // a drag: that zooms
+    const marker = starAt(view, event.clientX, event.clientY);
+    if (!marker) return;
+    event.stopPropagation();
+    view.onPick(marker.star, marker.catalog);
+  });
+}
+
+// A new frame or new markers: the star under a still mouse may have changed
+function refreshHover(view) {
+  if (view.pointer) setHovered(view, starAt(view, view.pointer.x, view.pointer.y), view.pointer.x, view.pointer.y);
+}
+
+// ---- The page's overlay ----
+const pageStars = createStarView(starOverlay, showStarInfo);
+// (viewer.js) Box drags over the stars; while "Working…" (app.js throbber) nothing takes clicks
+listenForStars(pageStars, () => activeTool === "pointer" && throbber.hidden);
+
+// Collect the markers again: called when the GIF, the layers or the displayed size change
 function buildStarOverlay() {
   const metadata = shownMetadata();
   const width = image.clientWidth;
+  const height = image.clientHeight;
+  const ratio = window.devicePixelRatio || 1;
   const key = metadata
-    ? `${metadata.uuid}|${image.currentSrc || image.src}|${width}|${layersVersion}`
+    ? `${metadata.uuid}|${image.currentSrc || image.src}|${width}x${height}@${ratio}|${layersVersion}|${gridMode}|${gridLabelsAway}`
     : "";
   if (key === starOverlayKey) return;
   starOverlayKey = key;
-  starOverlay.replaceChildren();
-  starMarkers = [];
-  drawnFrame = undefined;
   if (selectedStar && selectedStar.uuid !== metadata?.uuid) { // another job: its card is stale
     selectedStar = null;
     starInfo.hidden = true;
   }
-  if (!metadata || !anyLayerOn()) {
-    starOverlay.toggleAttribute("hidden", true); // (an <svg> has no .hidden property)
-    return;
-  }
-
-  starMarkers = drawStarLayers(starOverlay, metadata, width / image.naturalWidth, showStarInfo);
-  starOverlay.toggleAttribute("hidden", starMarkers.length === 0);
+  setStarViewMarkers(pageStars, metadata);
+  Object.assign(pageStars, { scale: width / (image.naturalWidth || 1), width, height, frame: undefined,
+    grid: coordinateGrid(metadata) });
+  starOverlay.toggleAttribute("hidden", pageStars.markers.length === 0 && !pageStars.grid);
+  refreshHover(pageStars);
   placeStarMarkers();
 }
 
-// Draws the switched-on layers into svg (the page's overlay or the zoom's) and
-// returns their markers, for placeMarkers(). pxPerGifPx: screen px per GIF px
-// there - markers and labels keep their size on screen, but a marker always
-// surrounds at least a 3 px star. onPick(star, catalog): a star was clicked.
-function drawStarLayers(svg, metadata, pxPerGifPx, onPick) {
-  svg.replaceChildren();
-  svg.setAttribute("viewBox", `0 0 ${image.naturalWidth} ${image.naturalHeight}`);
-  const radius = Math.max(STAR_MARKER_PX / pxPerGifPx, 1.5);
-  const fontSize = STAR_LABEL_PX / pxPerGifPx;
-  const markers = [];
-
-  for (const { key, catalog, stars, options, style } of visibleLayers(metadata)) { // (layers.js)
-    const layer = svgElement("g", { class: `star-layer star-layer-${key}` });
-    layer.style.setProperty("--layer-color", style.color);
-    const sizes = markerSizes(catalog, stars, options.size);
-    // brightest drawn last = on top
-    for (const star of [...stars].reverse()) {
-      const points = star.xy.filter(Boolean);
-      if (!points.length) continue;
-      const average = [
-        points.reduce((sum, p) => sum + p[0], 0) / points.length,
-        points.reduce((sum, p) => sum + p[1], 0) / points.length,
-      ];
-      const fast = star.reason.includes("fast");
-      const size = sizes.get(star);
-      const group = svgElement("g", {
-        class: `star${fast ? " star-fast" : ""}${size < 0.75 ? " star-faint" : ""}`, tabindex: "0",
-      });
-      const title = svgElement("title");
-      title.textContent = starTitle(star, catalog.label);
-      group.append(title);
-
-      if (fast && points.length > 1) {
-        group.append(svgElement("polyline", {
-          class: "star-track",
-          points: points.map((p) => p.join(",")).join(" "),
-        }));
-      }
-      const r = radius * size;
-      // the layer's shape, centred on (0, 0) and moved to the star (placeMarkers)
-      const marker = svgElement("g", { class: "star-marker" });
-      marker.append(shapeElement(style.shape, r)); // (layers.js)
-      // invisible, bigger target for hover / click
-      const hit = svgElement("circle", { class: "star-hit", r: Math.max(r * 1.6, radius * 0.8) });
-      group.append(marker, hit);
-      let label = null;
-      if (star.name && (options.labels === "named" || (options.labels === "fast" && fast))) {
-        label = svgElement("text", { class: "star-label", "font-size": fontSize });
-        label.textContent = star.name;
-        group.append(label);
-      }
-      group.addEventListener("click", (event) => {
-        event.stopPropagation();
-        onPick(star, catalog);
-      });
-      group.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onPick(star, catalog);
-        }
-      });
-      // a press on a star must not start the zoom selection on the image below
-      group.addEventListener("pointerdown", (event) => event.stopPropagation());
-      layer.append(group);
-      markers.push({ star, marker, hit, label, average, radius: r, fontSize, group });
-    }
-    svg.append(layer);
-  }
-  return markers;
-}
-
+// Follow the frame on screen; redraw when it or anything else changed
 function placeStarMarkers() {
-  if (!starMarkers.length) return;
   const frame = currentFrameIndex(); // (app.js)
-  if (frame === drawnFrame) return;
-  drawnFrame = frame;
-  placeMarkers(starMarkers, frame);
-  updateStarInfoFrame();
+  if (frame !== pageStars.frame) {
+    pageStars.frame = frame;
+    pageStars.dirty = true;
+    refreshHover(pageStars);
+    if (pageStars.markers.length) updateStarInfoFrame();
+  }
+  if (pageStars.dirty) drawStarView(pageStars);
 }
 
 // ---- The same stars in the zoom (app.js calls these while it is open) ----
 const zoomStarOverlay = document.querySelector("#zoom-star-overlay");
-let zoomMarkers = [];
-let zoomDrawnFrame;
+const zoomStars = createStarView(zoomStarOverlay, (star, catalog) => {
+  zoomDialog.close(); // the star card is on the page, under the zoom
+  showStarInfo(star, catalog);
+});
+listenForStars(zoomStars, () => true);
+zoomDialog.addEventListener("close", () => {
+  zoomStars.pointer = null;
+  setHovered(zoomStars, null);
+});
 
-// When the zoom opens: the same stars, at the zoom's scale
+// When the zoom opens: the same stars, at the zoom's scale. The canvas covers just
+// the zoom's view; zoomRegion (app.js) is the part of the frame it shows.
 function buildZoomStarOverlay(pxPerGifPx) {
-  const metadata = shownMetadata();
-  zoomMarkers = metadata && anyLayerOn()
-    ? drawStarLayers(zoomStarOverlay, metadata, pxPerGifPx, (star, catalog) => {
-      zoomDialog.close(); // the star card is on the page, under the zoom
-      showStarInfo(star, catalog);
-    })
-    : [];
-  if (!zoomMarkers.length) zoomStarOverlay.replaceChildren();
-  zoomStarOverlay.toggleAttribute("hidden", zoomMarkers.length === 0);
-  zoomDrawnFrame = undefined;
+  setStarViewMarkers(zoomStars, shownMetadata());
+  zoomStars.grid = coordinateGrid(shownMetadata());
+  Object.assign(zoomStars, {
+    scale: pxPerGifPx,
+    offsetX: -zoomRegion.x0 * pxPerGifPx,
+    offsetY: -zoomRegion.y0 * pxPerGifPx,
+    width: parseFloat(zoomView.style.width),
+    height: parseFloat(zoomView.style.height),
+    frame: undefined,
+    pointer: null,
+  });
+  zoomStarOverlay.toggleAttribute("hidden", zoomStars.markers.length === 0 && !zoomStars.grid);
   placeZoomStarMarkers();
 }
 
 function placeZoomStarMarkers() {
   const frame = currentFrameIndex();
-  if (!zoomMarkers.length || frame === zoomDrawnFrame) return;
-  zoomDrawnFrame = frame;
-  placeMarkers(zoomMarkers, frame);
-}
-
-// Puts the markers on a frame (null = at their average positions).
-function placeMarkers(markers, frame) {
-  for (const { star, marker, hit, label, average, radius, fontSize, group } of markers) {
-    const position = frame === null ? average : star.xy[frame];
-    group.classList.toggle("star-outside", !position); // outside the image in this frame
-    if (!position) continue;
-    const [x, y] = position;
-    marker.setAttribute("transform", `translate(${x} ${y})`); // (its shape is centred on 0, 0)
-    hit.setAttribute("cx", x);
-    hit.setAttribute("cy", y);
-    if (label) {
-      label.setAttribute("x", x + radius * 1.5);
-      label.setAttribute("y", y - radius * 1.2);
-      label.setAttribute("font-size", fontSize);
-    }
+  if (frame !== zoomStars.frame) {
+    zoomStars.frame = frame;
+    zoomStars.dirty = true;
+    refreshHover(zoomStars);
   }
+  if (zoomStars.dirty && (zoomStars.markers.length || zoomStars.grid)) drawStarView(zoomStars);
 }
 
-// Every animation frame: rebuild if needed (cheap check), then follow the GIF.
+// Every animation frame: collect again if needed (cheap check), then follow the GIF.
 function starOverlayTick() {
   buildStarOverlay();
   placeStarMarkers();

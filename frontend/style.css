@@ -99,6 +99,37 @@ p {
   margin-bottom: 12px;
 }
 
+.setting-row[hidden] {
+  display: none; /* the globe switches while "Show globe" is off */
+}
+
+/* "Coordinate grid" (star-overlay.js): a row like the switches' (.setting-row:
+   centred, same gap below), as tall as a switch */
+.settings-panel .grid-setting {
+  min-height: 26px;
+}
+
+#grid-mode {
+  padding: 3px 6px;
+  border: 1px solid #55709e;
+  border-radius: 6px;
+  background: #133365;
+  color: white;
+  font: inherit;
+  font-size: 13px;
+}
+
+/* "Reset to defaults" (app.js): asks first */
+.settings-panel .reset-settings {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  border: 1px solid #55709e;
+  background: #133365;
+  color: white;
+  font-size: 14px;
+}
+
 .settings-panel button {
   padding: 6px 10px;
   border: 0;
@@ -158,18 +189,16 @@ p {
 
 #speed,
 #pixel-size {
+  display: block;
   width: 100%;
   margin: 10px 0 18px;
-}#pixel-size {
-  display: block;
-  margin-bottom: 0;
 }
 
 #apply-settings {
   display: block;
   box-sizing: border-box;
   width: 100%;
-  margin: 24px 0;
+  margin: 8px 0 24px; /* (the slider above brings 18 px) */
   padding: 12px 14px;
   background: #6ca9ff;
   color: #081b3a;
@@ -220,20 +249,21 @@ p {
   overflow: hidden;
 }
 
-#zoom-image {
-  position: absolute;
-  max-width: none;
-}
-
-/* The frame on screen, drawn from the decoded GIF frames (see openZoom in app.js) */
+/* The zoomed part of the frame on screen, drawn into a canvas the size of the
+   zoom's view (app.js zoomTick) */
 #zoom-frame {
   position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
-/* The star markers in the zoom: placed like the zoomed image, styled like the page's */
+/* The star markers in the zoom: a canvas over the zoom's view (star-overlay.js) */
 #zoom-star-overlay {
   position: absolute;
-  overflow: visible;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
@@ -352,8 +382,11 @@ p {
   box-sizing: border-box;
   overflow: hidden; /* the image follows the rounded corner */
   /* white like the rulers: together one white frame. Only the lower right
-     corner is an outer corner (the others touch the rulers), so only it is round. */
-  border: 8px solid white;
+     corner is an outer corner (the others touch the rulers), so only it is round.
+     On the ruler sides only 4 px: the gap between the ticks and the image
+     (same total both ways, so the image stays square). */
+  border: solid white;
+  border-width: 4px 8px 8px 4px;
   border-radius: 0 0 12px 0;
   background-color: #081b3a;
 }
@@ -438,16 +471,14 @@ p {
   pointer-events: none; /* clicks go through to the <img>, which does the zoom selection */
 }
 
-/* Star overlays (star-overlay.js): over the GIF and the stopped frame. Only the
-   stars themselves take the mouse - everywhere else a press still reaches the
-   image below (zoom selection). The viewBox is in GIF pixels, so the SVG is
-   exactly as big as the image. */
+/* Star overlays (star-overlay.js): a canvas over the GIF and the stopped frame,
+   drawn in screen pixels. It lets the mouse through, so a press still reaches the
+   image below (zoom / box selection); its parent finds the star under the mouse. */
 #star-overlay {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  overflow: visible;
   pointer-events: none;
 }
 
@@ -455,67 +486,23 @@ p {
   display: none;
 }
 
-.star-overlay .star {
-  cursor: pointer;
-  pointer-events: auto;
-  outline: none;
-}
-
-.star-overlay .star-outside {
-  display: none; /* outside the image in this frame */
-}
-
-/* a marker: a <g> moved to the star, holding the layer's shape (layers.js
-   shapeElement); its colour is the layer's (--layer-color, set per layer) */
-.star-overlay .star-marker {
-  fill: none;
-  stroke: var(--layer-color, #4fe3ff);
-  stroke-width: 1.5px;
-  filter: drop-shadow(0 0 1px #000);
-}
-
-.star-overlay .star-marker > * {
-  vector-effect: non-scaling-stroke;
-}
-
-.star-overlay .star-hit {
-  fill: transparent;
-  stroke: none;
-}
-
-
-.star-overlay .star-fast .star-marker {
-  stroke-width: 2.5px;
-}
-
-/* the fainter part of a catalogue: small and light, so the image stays visible */
-.star-overlay .star-faint .star-marker {
-  stroke-width: 1px;
-  opacity: 0.75;
-}
-
-.star-overlay .star:hover .star-marker,
-.star-overlay .star:focus-visible .star-marker {
-  stroke: white;
-  stroke-width: 2.5px;
-}
-
-.star-overlay .star-track {
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.75);
-  stroke-width: 1px;
-  stroke-dasharray: 3 3;
-  vector-effect: non-scaling-stroke;
-}
-
-.star-overlay .star-label {
-  fill: white;
+/* the hover box of a star (instead of a tooltip per marker) */
+.star-tooltip {
+  position: fixed;
+  z-index: 10;
+  max-width: 360px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background-color: #081b3a;
+  border: 1px solid #9fc5ff;
+  color: white;
   font-family: "DM Sans", sans-serif;
-  paint-order: stroke;
-  stroke: #000;
-  stroke-width: 3px;
-  vector-effect: non-scaling-stroke;
+  font-size: 13px;
   pointer-events: none;
+}
+
+.star-tooltip[hidden] {
+  display: none;
 }
 
 
@@ -656,11 +643,12 @@ p {
 
 /* ---- Layout: side panel (coordinates, star info) | viewer | globe ---- */
 :root {
-  --side-width: clamp(260px, 22vw, 340px);
-  --globe-width: clamp(220px, 20vw, 300px); /* the least the right panel gets */
-  --ruler-left-page: 80px;  /* Dec labels + the upright "Dec" title */
+  /* the left panel (coordinates, layers) got 40 px from the right one (settings, star card) */
+  --side-width: clamp(290px, calc(22vw + 40px), 380px);
+  --globe-width: clamp(190px, calc(20vw - 40px), 260px); /* the least the right panel gets */
+  --ruler-left-page: 76px;  /* Dec labels + the upright "Dec" title (viewer.js sets it to fit) */
   --ruler-top-page: 40px;   /* the "RA" title line + RA labels */
-  --tools-width: 50px;      /* the tools (40 px) + their gap to the frame */
+  --tools-width: 0px;       /* (no tool buttons any more: "Yes" switches to the box) */
 }
 
 /* The viewer is only as wide as its frame needs (--frame-max: the tallest frame
@@ -677,6 +665,49 @@ p {
   height: 100dvh;
   margin: 0;
   overflow-x: clip; /* the tools' hover labels must not make the page scroll sideways */
+}
+
+/* Dragged panel widths (viewer.js): the left panel's replaces --side-width; the
+   right panel's (.right-sized) fixes the right column, and the viewer takes the rest */
+.app-layout {
+  position: relative;
+}
+
+.app-layout.right-sized {
+  grid-template-columns: var(--side-width) minmax(0, 1fr) var(--right-width);
+}
+
+/* the drag handles on the panel edges: a short pill, only seen on hover / while dragging */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 12px;
+  margin-left: -6px; /* centred on the edge (viewer.js sets "left") */
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 4px;
+  height: 44px;
+  border-radius: 2px;
+  background: rgba(220, 232, 255, 0.75);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after,
+.panel-resizer.dragging::after {
+  opacity: 1;
 }
 
 .side-panel {
@@ -777,6 +808,23 @@ p {
   width: 100%; /* the panel scrolls if it gets long */
 }
 
+/* the right panel is narrow: each label above its value, not beside it */
+.right-panel .star-info dl {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.right-panel .star-info dt {
+  margin-top: 8px;
+  font-size: 15px; /* the titles a notch bigger than their values (14 px) */
+  font-weight: 500;
+}
+
+.right-panel .star-info dd {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 /* the date of the frame on screen and the save messages: on a dark backdrop */
 .frame-time,
 .save-status {
@@ -827,7 +875,6 @@ p {
    instead of the browser's blur */
 #result-image,
 #paused-frame,
-#zoom-image,
 #zoom-frame {
   image-rendering: pixelated;
 }
@@ -932,83 +979,14 @@ p {
   grid-area: 2 / 2;
 }
 
-/* Tools: top to bottom, right of the frame's top right corner */
-.viewer-toolbar {
-  grid-area: 2 / 3;
-  align-self: start;
-  justify-self: start;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-left: 10px;
-}
-
-.tool-button {
-  position: relative;
-  display: inline-grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border: 1px solid #55709e;
-  border-radius: 10px;
-  background: #133365;
-  cursor: pointer;
-}
-
-.tool-button svg {
-  width: 22px;
-  height: 22px;
-  fill: none;
-  stroke: white;
-  stroke-width: 1.8;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
-.tool-button[aria-pressed="true"] {
-  border-color: #cfe1ff;
-  background: #6ca9ff;
-}
-
-.tool-button[aria-pressed="true"] svg {
-  stroke: #081b3a;
-}
-
-/* hover labels like the play controls', to the right of the button */
-.tool-button[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  top: 50%;
-  left: calc(100% + 8px);
-  z-index: 3;
-  transform: translateY(-50%);
-  padding: 4px 10px;
-  border: 1px solid #9fc5ff;
-  border-radius: 6px;
-  background-color: #081b3a;
-  color: white;
-  font-family: "DM Sans", sans-serif;
-  font-size: 13px;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.tool-button[data-tooltip]:hover::after {
-  opacity: 1;
-}
-
 /* the cursor says what a press on the image does */
-.result-frame[data-tool="pointer"] #result-image { cursor: default; }
-.result-frame[data-tool="zoom"] #result-image { cursor: zoom-in; }
+.result-frame[data-tool="pointer"] #result-image { cursor: zoom-in; }
 .result-frame[data-tool="box"] #result-image { cursor: crosshair; }
 
-/* Zoom and Box: a drag may start on a star marker (they cover much of the
-   image), so the stars only take clicks with the Pointer tool */
-.result-frame:not([data-tool="pointer"]) .star-overlay .star {
-  pointer-events: none;
+/* over a star (Pointer tool: a click opens its card; Box drags over the stars, star-overlay.js) */
+.result-frame.over-star #result-image,
+#zoom-view.over-star {
+  cursor: pointer;
 }
 
 #zoom-selection.box-selection {
@@ -1039,7 +1017,7 @@ p {
 
 #zoom-box-overlay {
   position: absolute;
-  inset: auto; /* placed like the zoomed image (app.js openZoom) */
+  inset: 0; /* over the zoom's view, its viewBox = the zoomed part (viewer.js drawBox) */
 }
 
 /* Narrow windows (phones): one column - coordinates, the frame (as wide as the
@@ -1061,23 +1039,29 @@ p {
     display: contents;
   }
 
+  .panel-resizer {
+    display: none; /* one column: nothing to resize */
+  }
+
+  /* coordinates, Submit, image + player + question, star card, layers (folded
+     unless opened, layers.js), settings, globe */
   .coordinate-fields { order: 1; }
   .submit-row { order: 2; }
   .viewer { order: 3; padding: 0; }
   .star-info { order: 4; }
-  .celestial-globe-panel { order: 5; }
+  .layers { order: 5; }
+  .celestial-globe-panel { order: 7; }
 
   .frame-stage {
     container-type: inline-size;
   }
 
   .ruler-frame {
-    --ruler-left: 72px;
-    --tools-width: 52px;
+    --ruler-left: var(--ruler-left-page);
     --frame: calc(100cqw - var(--ruler-left) - var(--tools-width));
   }
 
-  .settings { order: 0; margin: 0; }
+  .settings { order: 6; margin: 0; }
 
   .movement-question p {
     flex-basis: 100%; /* the question on its own line, the buttons below it */
@@ -1099,6 +1083,48 @@ p {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+.layers-head h2 {
+  margin-right: auto;
+}
+
+/* A chevron (layers.js): "v" folded / closed, "^" open (on the button's aria-expanded) */
+.chevron {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s;
+}
+
+[aria-expanded="true"] > .chevron {
+  transform: translateY(2px) rotate(-135deg);
+}
+
+/* the whole layer list folds into its heading (and a summary, e.g. "4 of 5 shown") */
+.layers-fold {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #9fc5ff;
+  cursor: pointer;
+}
+
+.layers-summary {
+  color: #8fa6c8;
+  font-size: 13px;
+}
+
+.layers-summary[hidden],
+.layers-body[hidden] {
+  display: none;
 }
 
 .layers h2 {
@@ -1129,7 +1155,7 @@ p {
 
 .layer-row {
   display: grid;
-  grid-template-columns: 22px 16px minmax(0, 1fr) auto 22px;
+  grid-template-columns: 22px 22px 16px minmax(0, 1fr) auto 22px;
   align-items: center;
   gap: 8px;
   padding: 4px 6px;
@@ -1143,8 +1169,56 @@ p {
 
 .layer-off .layer-name,
 .layer-off .layer-symbol,
-.layer-off .layer-count {
+.layer-off .layer-count,
+.layer-muted .layer-name,
+.layer-muted .layer-symbol,
+.layer-muted .layer-count,
+.layer-muted .layer-eye {
   opacity: 0.45;
+}
+
+/* solo ("S" or shift+click on the eye, layers.js): the layers drawn */
+.layer-solo {
+  box-shadow: inset 3px 0 0 #ffd34d;
+}
+
+.layer-solo .layer-eye::before {
+  border-color: #ffd34d;
+}
+
+.layer-solo .layer-eye::after {
+  background: #ffd34d;
+}
+
+.layer-solo .layer-eye[aria-pressed="false"]::before,
+.layer-solo .layer-eye[aria-pressed="false"]::after {
+  opacity: 1; /* drawn while solo, even if its switch is off */
+}
+
+/* "S": like a mixer's solo button, lit while solo */
+.layer-solo-button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #3d5c8c;
+  border-radius: 4px;
+  background: none;
+  color: #9fc5ff;
+  font-family: "DM Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.layer-solo-button:hover {
+  border-color: #9fc5ff;
+}
+
+.layer-solo-button[aria-pressed="true"] {
+  border-color: #ffd34d;
+  background: #ffd34d;
+  color: #081b3a;
 }
 
 .layer-name {
@@ -1202,6 +1276,8 @@ p {
 }
 
 .layer-more {
+  display: inline-grid;
+  place-items: center;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -1212,6 +1288,16 @@ p {
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
+}
+
+.layer-name {
+  cursor: pointer; /* opens / closes the row's options, like its chevron */
+}
+
+/* a layer that failed: reload (↻) instead of the options (layers.js) */
+.layer-more.layer-retry {
+  color: #ffd84d;
+  font-size: 17px;
 }
 
 .layer-more[aria-expanded="true"] {
@@ -1264,6 +1350,7 @@ p {
 }
 
 .layer-remove,
+.layer-reload,
 .layer-add-button {
   justify-self: start;
   padding: 4px 10px;
