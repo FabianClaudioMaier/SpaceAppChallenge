@@ -14,7 +14,7 @@ placed on every frame at that frame's date.
   ≥ 7.0; all other dependencies also run on 3.11. Check with `python3 --version`.
 - **Linux or macOS** with bash. On Windows, use WSL.
 - **Internet access.** Images and catalogues are downloaded when needed.
-- **Disk space.** The download cache **can** grow up to 128 GiB and then trims
+- **Disk space.** The download cache can grow up to 128 GiB and then trims
   itself automatically.
 
 ## Install and run
