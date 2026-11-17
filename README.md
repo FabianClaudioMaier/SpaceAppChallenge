@@ -56,8 +56,10 @@ The generated cache, videos, and `saves.csv` live in the container filesystem.
 Railway replaces that filesystem on deployment, so those files do not persist
 unless you attach persistent storage.
 
-The Docker image limits the backend to one worker process, eight download
-threads, and a 64 MiB queue for Railway's 0.5 GB memory limit. Override
+The Docker image limits the backend to one alignment thread, four download
+threads, and an 8 MiB queue for Railway's 0.5 GB memory limit. Using a thread
+for the single alignment worker avoids loading the Python libraries in a second
+process. Override
 `SPHEREX_WORKER_PROCESSES`, `SPHEREX_DOWNLOAD_THREADS`, or
 `SPHEREX_QUEUE_AHEAD_BYTES` if you give the service more memory.
 

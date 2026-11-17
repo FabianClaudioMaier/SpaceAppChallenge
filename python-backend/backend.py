@@ -76,7 +76,7 @@ import uuid as uuidlib
 import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -170,8 +170,8 @@ COLOR_FRAMES = True
 #    users run jobs at once.
 #  - WORKER_PROCESSES processes line the images up. That's number crunching,
 #    which threads can't spread over cores (Python's GIL) but processes can.
-#    Each process uses ~130 MB of RAM. Keep these configurable so small
-#    containers can run fewer workers than a developer machine.
+#    Each process uses ~130 MB of RAM. When only one worker is requested, use
+#    a thread instead, so a small container does not load the libraries twice.
 DOWNLOAD_THREADS = max(1, int(os.environ.get("SPHEREX_DOWNLOAD_THREADS", "64")))
 WORKER_PROCESSES = max(1, int(os.environ.get(
     "SPHEREX_WORKER_PROCESSES",
@@ -438,7 +438,7 @@ COVERAGE_TASK_IMAGES = 10  # images per worker-process task in coverage_of
 
 
 def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int,
-                threads: ThreadPoolExecutor, processes: ProcessPoolExecutor
+                threads: ThreadPoolExecutor, processes: Executor
                 ) -> dict[tuple[str, int], float | None]:
     """How much of the frame each image covers (None = header not available).
 
@@ -446,7 +446,7 @@ def coverage_of(exposures: list[Exposure], ra: float, dec: float, pixels: int,
     cheaper than downloading pixels that turn out unusable. Each answer needs a
     WCS built from the header (~13 ms, the lens-distortion terms make it slow),
     ~4 s for a typical spot in one process, so it is spread over the worker
-    processes (`processes`, started with _init_worker for this frame), while
+    alignment workers (`processes`, started with _init_worker for this frame), while
     missing headers are fetched in `threads`: images whose header is cached are
     computed at once, the others as soon as their header has arrived.
     The answers are cached per position + frame size in Cache/coverage/; only
@@ -1441,7 +1441,7 @@ def _smooth(img: np.ndarray, sigma: float) -> np.ndarray:
         return img
     ok = np.isfinite(img)
     num = gaussian_filter(np.where(ok, img, 0.0), sigma)
-    den = gaussian_filter(ok.astype(float), sigma)
+    den = gaussian_filter(ok.astype(np.float32), sigma)
     with np.errstate(invalid="ignore", divide="ignore"):
         out = num / den
     out[~ok] = np.nan
@@ -1552,10 +1552,11 @@ def _download_one(exp: Exposure, ra: float, dec: float, pixels: int) -> tuple:
     return ("off_chip",) if cut is None else ("ok",)
 
 
-def _download_then_align(downloads: ThreadPoolExecutor, aligners: ProcessPoolExecutor,
+def _download_then_align(downloads: ThreadPoolExecutor, aligners: Executor,
                          exp: Exposure, job: tuple) -> Future:
     """Queue one image: download it in a thread, and as soon as that is done line it
-    up in a process. Returns a future with _load_one's result (always set, also on errors).
+    up in an alignment worker. Returns a future with _load_one's result
+    (always set, also on errors).
     """
     result: Future = Future()
 
@@ -1646,10 +1647,11 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dic
 
     job = (ra, dec, pixels)
     frames, frame_meta, n_failed = [], [], 0
-    # The worker processes start right away: they first help with coverage_of,
-    # and are up and running by the time the first images are downloaded.
+    # The alignment worker starts right away for coverage_of and is ready when
+    # the first images are downloaded. A single worker stays in this process.
+    aligner_type = ThreadPoolExecutor if WORKER_PROCESSES == 1 else ProcessPoolExecutor
     with ThreadPoolExecutor(DOWNLOAD_THREADS) as downloads, \
-            ProcessPoolExecutor(WORKER_PROCESSES, initializer=_init_worker, initargs=job) as aligners:
+            aligner_type(WORKER_PROCESSES, initializer=_init_worker, initargs=job) as aligners:
         t_coverage = time.monotonic()
         coverage = coverage_of(exposures, ra, dec, pixels, downloads, aligners)
         t_images = time.monotonic()
@@ -1661,9 +1663,10 @@ def build_frames(ra: float, dec: float, pixels: int, out_dir: Path) -> tuple[dic
         # How many images may be queued ahead (their lined-up results wait in RAM).
         max_queued = max(2 * DOWNLOAD_THREADS, QUEUE_AHEAD_BYTES // (pixels * pixels * 4))
         log.info("%d images available, using %d in %d frames (one per visit; %d visits not used), "
-                 "%dx%d px frames, %d download threads, %d processes",
+                 "%dx%d px frames, %d download threads, %d alignment workers (%s)",
                  len(exposures), sum(map(len, time_bins)), len(time_bins), bins_skipped,
-                 pixels, pixels, DOWNLOAD_THREADS, WORKER_PROCESSES)
+                 pixels, pixels, DOWNLOAD_THREADS, WORKER_PROCESSES,
+                 "thread" if WORKER_PROCESSES == 1 else "processes")
         queued: deque[list[Future]] = deque()  # one list of futures per queued time bin
         next_bin = 0
         for _ in range(len(time_bins)):
