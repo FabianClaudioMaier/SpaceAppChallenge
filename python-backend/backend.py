@@ -170,12 +170,16 @@ COLOR_FRAMES = True
 #    users run jobs at once.
 #  - WORKER_PROCESSES processes line the images up. That's number crunching,
 #    which threads can't spread over cores (Python's GIL) but processes can.
-#    Each process uses ~130 MB of RAM.
-DOWNLOAD_THREADS = 64
-WORKER_PROCESSES = min(16, getattr(os, "process_cpu_count", os.cpu_count)() or 4)
+#    Each process uses ~130 MB of RAM. Keep these configurable so small
+#    containers can run fewer workers than a developer machine.
+DOWNLOAD_THREADS = max(1, int(os.environ.get("SPHEREX_DOWNLOAD_THREADS", "64")))
+WORKER_PROCESSES = max(1, int(os.environ.get(
+    "SPHEREX_WORKER_PROCESSES",
+    min(16, getattr(os, "process_cpu_count", os.cpu_count)() or 4),
+)))
 # Lined-up images waiting to be combined are kept in RAM; bins are queued ahead
 # until roughly this much would be waiting (at least 2 x DOWNLOAD_THREADS images).
-QUEUE_AHEAD_BYTES = 1024**3
+QUEUE_AHEAD_BYTES = max(1, int(os.environ.get("SPHEREX_QUEUE_AHEAD_BYTES", 1024**3)))
 
 # The FLAGS extension (bad-pixel mask) is not read: it would double the download.
 # Glitches (cosmic rays) are removed by the median of each visit's images instead.
