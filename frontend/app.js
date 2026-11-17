@@ -11,6 +11,7 @@ const zoomSelection = document.querySelector("#zoom-selection");
 const zoomDialog = document.querySelector("#zoom-dialog");
 const zoomView = document.querySelector("#zoom-view");
 const zoomImage = document.querySelector("#zoom-image");
+const zoomFrame = document.querySelector("#zoom-frame");
 const zoomClose = document.querySelector("#zoom-close");
 const clickSelectToggle = document.querySelector("#click-select-toggle");
 const pinArrowToggle = document.querySelector("#pin-arrow-toggle");
@@ -964,13 +965,41 @@ function openZoom(region, imageRect) {
   zoomView.style.width = `${Math.round(region.width * scale)}px`;
   zoomView.style.height = `${Math.round(region.height * scale)}px`;
 
-  zoomImage.src = image.currentSrc || image.src;
-  zoomImage.style.width = `${width * scale}px`;
-  zoomImage.style.height = `${height * scale}px`;
-  zoomImage.style.left = `${(left - region.left) * scale}px`;
-  zoomImage.style.top = `${(top - region.top) * scale}px`;
+  // With the decoded frames the zoom draws the frame on screen itself (playing or
+  // stopped), in step with the page and the star markers. Without them: the GIF,
+  // or a snapshot of the stopped frame, as before.
+  const framesReady = currentFrameIndex() !== null;
+  zoomFrame.hidden = !framesReady;
+  zoomImage.hidden = framesReady;
+  if (!framesReady) zoomImage.src = pausedFrame.hidden ? image.currentSrc || image.src : pausedFrame.toDataURL();
+  for (const element of [zoomImage, zoomFrame, zoomStarOverlay]) {
+    element.style.width = `${width * scale}px`;
+    element.style.height = `${height * scale}px`;
+    element.style.left = `${(left - region.left) * scale}px`;
+    element.style.top = `${(top - region.top) * scale}px`;
+  }
   zoomImage.style.filter = image.style.filter;
+  zoomFrame.style.filter = image.style.filter; // keep "Invert GIF"
+  zoomFrameShown = null;
+  buildZoomStarOverlay((width * scale) / image.naturalWidth); // screen px per GIF px in the zoom (star-overlay.js)
   zoomDialog.showModal();
+  requestAnimationFrame(zoomTick);
+}
+
+let zoomFrameShown = null;
+// While the zoom is open, its frame and its star markers follow the frame on screen
+function zoomTick() {
+  if (!zoomDialog.open) return;
+  const i = currentFrameIndex();
+  if (!zoomFrame.hidden && i !== null && i !== zoomFrameShown) {
+    zoomFrameShown = i;
+    const bitmap = gifFrames[i].bitmap;
+    zoomFrame.width = bitmap.width;
+    zoomFrame.height = bitmap.height;
+    zoomFrame.getContext("2d").drawImage(bitmap, 0, 0);
+  }
+  placeZoomStarMarkers(); // (star-overlay.js)
+  requestAnimationFrame(zoomTick);
 }
 
 image.addEventListener("pointerdown", (event) => {
@@ -1152,6 +1181,13 @@ function frameShowingNow() {
     i++;
   }
   return i;
+}
+
+// Which frame is on screen; null if not known (frames not decoded yet, or no ImageDecoder).
+function currentFrameIndex() {
+  if (!pausedFrame.hidden) return shownFrame; // stopped, stepping, or playing on the canvas
+  if (gifFrames.length && gifFramesSrc === (image.currentSrc || image.src)) return frameShowingNow();
+  return null;
 }
 
 function drawFrame(i) {
