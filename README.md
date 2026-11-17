@@ -41,6 +41,21 @@ After that it only reinstalls when the requirements change.
 
 The server only listens on `127.0.0.1` (your own computer).
 
+## Railway deployment
+
+The root `Dockerfile` installs the Python dependencies during the image build
+and runs `./start.sh` when the container starts. Railway can deploy it from the
+GitHub `main` branch; enable auto deploys in the service's Source settings.
+
+Set the service variable `PORT=5173` and set the public domain's target port to
+`5173`. The container listens on `0.0.0.0` on that port. Visitors use the
+Railway HTTPS domain without a port number, for example
+`https://spaceappchallenge-production.up.railway.app/`.
+
+The generated cache, videos, and `saves.csv` live in the container filesystem.
+Railway replaces that filesystem on deployment, so those files do not persist
+unless you attach persistent storage.
+
 ## Usage
 
 1. Enter **Right Ascension** and **Declination**: decimal degrees

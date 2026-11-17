@@ -7,8 +7,9 @@ BACKEND_DIR="$ROOT_DIR/python-backend"
 "$BACKEND_DIR/setup_venv.sh"
 PY="$BACKEND_DIR/.venv/bin/python"
 PORT="${PORT:-5173}"
+HOST="${HOST:-127.0.0.1}"
 
-echo "Frontend und Middleware laufen unter http://127.0.0.1:${PORT}/"
+echo "Frontend und Middleware laufen unter http://${HOST}:${PORT}/"
 "$PY" "$MIDDLEWARE_DIR/clean_cache.py" &
 clean_cache_pid=$!
 "$PY" "$MIDDLEWARE_DIR/server.py" "$PORT" &

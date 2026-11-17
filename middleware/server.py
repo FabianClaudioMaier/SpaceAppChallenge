@@ -124,5 +124,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5173
-    print(f"Serving frontend and middleware at http://127.0.0.1:{port}/", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    host = os.environ.get("HOST", "127.0.0.1")
+    print(f"Serving frontend and middleware at http://{host}:{port}/", flush=True)
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
